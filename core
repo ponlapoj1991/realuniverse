@@ -1,19 +1,26 @@
 /**
  * ===== REALUNIVERSE AI MASTER LIBRARY =====
- * Version: 1.0.9 (Added Thinking Display for Action & Turbo Mode)
+ * Version: 1.1.0 (Thinking Mode with 2 API Calls)
  */
+
 /* ------------------ CONFIGURATION ------------------ */
-const API_URL = 'https://api.openai.com/v1/chat/completions';      // Chat Completions
-const RESPONSES_API_URL = 'https://api.openai.com/v1/responses';    // Responses API
+
+const API_URL = 'https://api.openai.com/v1/chat/completions';
+const RESPONSES_API_URL = 'https://api.openai.com/v1/responses';
 const IMAGE_API_URL = 'https://api.openai.com/v1/images/generations';
 
 // Model Configuration for different modes
-// ระบบจะตรวจชื่อโมเดลแล้วเลือก endpoint ให้เอง (responses/chat)
 const MODEL_CONFIG = {
-  action_standard: { model: 'gpt-4.1', max_tokens: 25000 },
+  action_standard: { model: 'gpt-4.1', max_tokens: 12000 },
   action_turbo: { model: 'gpt-4.1', max_tokens: 25000 },
   array: { model: 'gpt-4.1', max_tokens: 2000 },
   image: { model: 'dall-e-3', size: '1024x1024', quality: 'hd', n: 1 }
+};
+
+// ⭐ NEW: Thinking Mode Config
+const THINKING_MODE_CONFIG = {
+  thinking_api: { model: 'gpt-4.1', max_tokens: 3000 },
+  answer_api: { model: 'gpt-4.1', max_tokens: 15000 }
 };
 
 const TEMPERATURE_PRESETS = [0, 0.2, 0.4, 0.7];
@@ -36,14 +43,9 @@ const DEBUG_LOG_SHEET_NAME = 'DebugLog';
 
 /* ------------------ DYNAMIC PRESET FUNCTIONS ------------------ */
 
-/**
- * Get dynamic presets from Sheet "Preset"
- * Returns object with action and array presets based on sheet content
- */
 function getDynamicPresets() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Preset');
 
-  // หยุดทำงานทันทีหากไม่พบ Sheet Preset
   if (!sheet) {
     throw new Error('❌ ไม่พบ Sheet "Preset" โปรดสร้าง Sheet ชื่อ "Preset" ก่อนใช้งาน');
   }
@@ -55,7 +57,6 @@ function getDynamicPresets() {
       image: {}
     };
 
-    // อ่าน Action Presets (คอลัมน์ A-B) - รองรับได้สูงสุด 20 แถว
     const actionRange = sheet.getRange('A2:B21');
     const actionValues = actionRange.getValues();
 
@@ -71,7 +72,6 @@ function getDynamicPresets() {
       }
     });
 
-    // อ่าน Array Presets (คอลัมน์ D-E)
     const arrayRange = sheet.getRange('D2:E21');
     const arrayValues = arrayRange.getValues();
 
@@ -87,7 +87,6 @@ function getDynamicPresets() {
       }
     });
 
-    // อ่าน Image Presets (คอลัมน์ G-H)
     const imageRange = sheet.getRange('G2:H21');
     const imageValues = imageRange.getValues();
 
@@ -145,6 +144,7 @@ function getPresetDescriptionByKey(presetKey) {
 }
 
 /* ------------------ MAIN LIBRARY FUNCTIONS ------------------ */
+
 function onOpen() {
   initializeRealUniverse();
 }
@@ -289,10 +289,22 @@ function setupRealUniverseApiKey() {
 
 /* ------------------ CORE AI PROCESSING FUNCTIONS ------------------ */
 
-function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false) {
+/**
+ * ⭐ UPDATED: Added thinkingMode parameter
+ */
+function processRealUniverseAI(prompt, preset, temperature, mode, turboMode, thinkingMode) {
   try {
+    preset = preset || 'action_preset_2';
+    temperature = temperature || 0;
+    mode = mode || 'action';
+    turboMode = turboMode || false;
+    thinkingMode = thinkingMode || false;
+
     if (mode === 'action') {
-      if (turboMode) {
+      if (thinkingMode) {
+        // ⭐ NEW: Use Thinking Mode (2 API calls)
+        return processRealUniverseWithThinking(prompt, preset, temperature, turboMode);
+      } else if (turboMode) {
         return processRealUniverseTurbo(prompt, preset, temperature);
       } else {
         return processRealUniverseStandard(prompt, preset, temperature);
@@ -383,52 +395,6 @@ function processRealUniverseStandard(prompt, preset, temperature) {
     enhancedPrompt = formatMixedData(allDataArray, calculations, prompt, rangeInfo);
   }
 
-  // ⭐ เพิ่ม Chain of Thought Instruction
-enhancedSystemMessage += '\n\n⭐ IMPORTANT - THINKING PROCESS:\n' +
-  'Think out loud as you analyze the data - like having an internal conversation with yourself.\n' +
-  'Show your REAL-TIME thinking process, not a report of finished work.\n\n' +
-  'Return your response in JSON format:\n' +
-  '{\n' +
-  '  "thinking": [\n' +
-  '    "เริ่มสำรวจข้อมูล... เห็นมี [จำนวน] แถว ดูเหมือนจะเป็น [ความรู้สึกแรก]",\n' +
-  '    "อืม ลองอ่านดูหลายแถว... ดูเหมือนจะเกี่ยวกับ [หัวข้อหลัก]",\n' +
-  '    "ข้อมูลมีหลายแบบนะ บางทีเป็น [ประเภท1] บางทีเป็น [ประเภท2]... ฉันจะลอง [สิ่งที่จะทำ]",\n' +
-  '    "เอาล่ะ [ทำเสร็จแล้ว] มาดูว่า [สิ่งที่จะดูต่อ]... โอ้ [สิ่งที่เจอ]",\n' +
-  '    "เห็น [รายละเอียด] บ่อยมาก คนน่าจะ [การตีความ]",\n' +
-  '    "มี [สิ่งอื่นที่พบ] ด้วย... น่าจะเป็น [การวิเคราะห์]",\n' +
-  '    "ลองดูภาพรวม... [สิ่งที่สังเกต]",\n' +
-  '    "โอเค เห็นแล้ว [สรุป] ได้ข้อสรุปแล้ว"\n' +
-  '  ],\n' +
-  '  "answer": "คำตอบของคุณที่สมบูรณ์ตามที่ preset กำหนด"\n' +
-  '}\n\n' +
-  'CRITICAL RULES FOR NATURAL THINKING:\n' +
-  '- Write as if you are CURRENTLY analyzing in real-time (not reporting finished work)\n' +
-  '- Use conversational Thai like talking to yourself: อืม, โอ้, เอาล่ะ, โอเค, นะ\n' +
-  '- Use present progressive: เห็น, ลอง, ดู, มาดู (NOT: พบว่า, ตรวจสอบแล้ว, วิเคราะห์แล้ว)\n' +
-  '- Show uncertainty and discovery: ดูเหมือนจะ, น่าจะ, บางที\n' +
-  '- Say what you are about to do: "ฉันจะลอง...", "มาดูว่า..."\n' +
-  '- Show reactions: โอ้, อืม, น่าสนใจ, เอาล่ะ\n' +
-  '- End with realization: "โอเค เห็นแล้ว [conclusion] ได้ข้อสรุปแล้ว"\n' +
-  '- 6-9 thinking steps showing natural flow of analysis\n' +
-  '- Each analysis must be UNIQUE based on actual data content\n' +
-  '- Make it feel like reader is inside your head watching you think\n\n' +
-  'PERFECT EXAMPLES:\n' +
-  '✅ "เริ่มสำรวจข้อมูล... เห็นมี 71 แถว ดูเหมือนจะเป็นข้อความสนทนา"\n' +
-  '✅ "อืม ลองอ่านดูหลายแถว... ดูเหมือนจะเกี่ยวกับ..."\n' +
-  '✅ "ข้อมูลมีหลายแบบนะ บางทีเป็นคำถาม บางทีเป็นประสบการณ์... ฉันจะลองจัดกลุ่มดู"\n' +
-  '✅ "เอาล่ะ จัดกลุ่มแล้วมาดูว่าคนถามเรื่องอะไรบ้าง... โอ้ มีเรื่องอะไหล่เยอะเลย"\n' +
-  '✅ "เห็นคำว่า @keyword @keyword @keyword บ่อยมาก คนน่าจะสนใจเกี่ยวกับ..."\n' +
-  '✅ "มีคนถามเรื่องเสียงแปลกๆ บ้างด้วย... น่าจะเป็นปัญหาการใช้งาน"\n' +
-  '✅ "ลองดูภาพรวม... คนในกลุ่มนี้ชอบแลกเปลี่ยนประสบการณ์จริงๆ มากกว่าทฤษฎี"\n' +
-  '✅ "โอเค เห็นแล้ว กลุ่มนี้เน้นดูแลรักษาและแต่งรถเป็นหลัก ได้ข้อสรุปแล้ว"\n\n' +
-  'NEVER DO THIS (TOO FORMAL):\n' +
-  '❌ "พบว่ามี 71 แถว เป็นข้อความสอบถาม"\n' +
-  '❌ "ตรวจสอบความสมบูรณ์ของข้อมูล พบว่า..."\n' +
-  '❌ "วิเคราะห์ประเด็นที่ถูกพูดถึงบ่อย พบว่า..."\n' +
-  '❌ "สรุปภาพรวม ข้อมูลชุดนี้สะท้อนถึง..."\n\n' +
-  '- answer must be your complete response following the preset instructions\n' +
-  '- Return ONLY valid JSON, no additional text';
-
   const payload = {
     model: config.model,
     messages: [
@@ -436,17 +402,157 @@ enhancedSystemMessage += '\n\n⭐ IMPORTANT - THINKING PROCESS:\n' +
       { role: 'user', content: enhancedPrompt }
     ],
     temperature: temperature,
-    max_tokens: config.max_tokens,
+    max_tokens: config.max_tokens
+  };
+
+  const result = makeRealUniverseApiCallWithRetry(payload);
+  saveRealUniverseHistory(prompt + ' (Smart)', result);
+  return result;
+}
+
+/**
+ * ⭐ NEW: Process with Thinking Mode (2 API Calls)
+ */
+function processRealUniverseWithThinking(prompt, preset, temperature, isTurbo) {
+  const systemMessage = getRealUniverseSystemMessage(getDynamicPresetSystemMessage(preset, 'action'), 'action');
+  const thinkingConfig = THINKING_MODE_CONFIG.thinking_api;
+  const answerConfig = THINKING_MODE_CONFIG.answer_api;
+
+  // Prepare data
+  let allDataArray = [];
+  const rangeList = SpreadsheetApp.getActiveRangeList();
+  if (rangeList) {
+    const ranges = rangeList.getRanges();
+
+    ranges.forEach(range => {
+      let visibleRowsAndNumbers = getVisibleCellsForActionWithRowNumbers(range);
+      visibleRowsAndNumbers.forEach(item => {
+        const cleanedRow = item.data.map(val => cleanCellData(val));
+        if (cleanedRow.some(val => val !== '')) {
+          allDataArray.push({
+            rowNumber: item.rowNumber,
+            data: cleanedRow
+          });
+        }
+      });
+    });
+  }
+
+  const ranges = rangeList.getRanges();
+  const firstRange = ranges[0];
+  const sheetName = firstRange.getSheet().getName();
+  const rangeNotation = ranges.map(r => r.getA1Notation()).join(', ');
+  const totalCols = firstRange.getNumColumns();
+  const totalRowsVisible = allDataArray.length;
+  const rangeInfo = `Selected Range: ${sheetName}!${rangeNotation} (${totalCols} columns, ${totalRowsVisible} visible rows)`;
+
+  const dataAnalysis = analyzeDataStructure(allDataArray);
+
+  let enhancedPrompt = prompt;
+  let dataContext = '';
+
+  if (dataAnalysis.dataType === 'content_only') {
+    dataContext = formatContentOnlyData(allDataArray, '', rangeInfo);
+  } else if (dataAnalysis.dataType === 'mixed_data') {
+    const calculations = performCalculations(allDataArray, dataAnalysis);
+    dataContext = formatMixedData(allDataArray, calculations, '', rangeInfo);
+  }
+
+  // ━━━━━ API CALL #1: THINKING ━━━━━
+  const thinkingSystemMessage = `${systemMessage}
+
+⭐ YOUR TASK - THINKING & PLANNING PHASE:
+
+You are in the THINKING stage. Your job is to:
+1. Look at the data and observe what you see
+2. Understand what the preset is asking for
+3. Plan HOW you will analyze to meet the preset requirements
+
+Think out loud naturally - like having an internal conversation with yourself.
+
+Return JSON format:
+{
+  "thinking": [
+    "เริ่มดูข้อมูล... เห็น [what you actually see in the data]",
+    "อืม preset ต้องการ [specific goal from preset]... ฉันต้อง [specific approach]",
+    "ข้อมูลมี [specific observation about data structure/content]... ฉันจะ [specific planned action]",
+    "เอาล่ะ มาวางแผน: ขั้นแรก [specific step], แล้ว [specific step], สุดท้าย [specific step]",
+    "โอเค พร้อมแล้ว รู้ว่าจะ [what exactly you will do next]"
+  ]
+}
+
+CRITICAL RULES - MUST FOLLOW:
+- Write as if you are CURRENTLY analyzing (use: เห็น, ลอง, ดู, ฉันจะ)
+- NEVER use past tense (พบว่า, วิเคราะห์แล้ว, ตรวจสอบแล้ว)
+- Use natural Thai conversation: อืม, โอ้, เอาล่ะ, โอเค, น่าสนใจ
+- MUST be SPECIFIC to the actual data you see - mention actual numbers, columns, patterns
+- NEVER use generic templates - each thinking MUST be unique to this specific data
+- Show what you ACTUALLY SEE (example: "เห็น 150 แถว มี 3 คอลัมน์: ชื่อ, ยอดขาย, วันที่")
+- Show what you PLAN TO DO (example: "ฉันจะคำนวณยอดรวม แล้วหาค่าเฉลี่ย แล้วเปรียบเทียบแต่ละเดือน")
+- 5-8 thinking steps
+- DO NOT provide final answer - only thinking/planning
+- Return ONLY valid JSON`;
+
+  const thinkingPayload = {
+    model: thinkingConfig.model,
+    messages: [
+      { role: 'system', content: thinkingSystemMessage },
+      { role: 'user', content: `${enhancedPrompt}\n\n${dataContext}` }
+    ],
+    temperature: temperature,
+    max_tokens: thinkingConfig.max_tokens,
     response_format: { "type": "json_object" }
   };
 
-  const rawResult = makeRealUniverseApiCallWithRetry(payload);
-  
-  // ⭐ Parse JSON Response
-  const parsedResult = parseThinkingResponse(rawResult);
-  
-  saveRealUniverseHistory(prompt + ' (Smart)', parsedResult.answer);
-  return parsedResult;
+  const thinkingRawResult = makeRealUniverseApiCallWithRetry(thinkingPayload);
+  const thinkingResult = parseThinkingResponse(thinkingRawResult);
+
+  if (!thinkingResult.thinking || thinkingResult.thinking.length === 0) {
+    throw new Error('Failed to get thinking steps from API');
+  }
+
+  // ━━━━━ API CALL #2: ANSWER ━━━━━
+  const thinkingStepsText = thinkingResult.thinking.map((step, i) => `${i + 1}. ${step}`).join('\n');
+
+  const answerSystemMessage = `${systemMessage}
+
+⭐ YOUR TASK - EXECUTION PHASE:
+
+You already analyzed and planned in the previous thinking phase.
+
+YOUR THINKING & PLANNING:
+${thinkingStepsText}
+
+Now EXECUTE this plan and provide your FULL, DETAILED answer according to the preset.
+
+CRITICAL REQUIREMENTS:
+- Follow the plan you created above
+- Provide comprehensive, detailed analysis (1200-2000 words)
+- Meet all preset requirements
+- This is your FINAL answer - make it complete and thorough
+- DO NOT repeat the thinking steps in your answer
+- Focus on delivering results, insights, and conclusions`;
+
+  const answerPayload = {
+    model: answerConfig.model,
+    messages: [
+      { role: 'system', content: answerSystemMessage },
+      { role: 'user', content: `${enhancedPrompt}\n\n${dataContext}` }
+    ],
+    temperature: temperature,
+    max_tokens: answerConfig.max_tokens
+  };
+
+  const finalAnswer = makeRealUniverseApiCallWithRetry(answerPayload);
+
+  // Return combined result
+  const combinedResult = {
+    thinking: thinkingResult.thinking,
+    answer: finalAnswer
+  };
+
+  saveRealUniverseHistory(prompt + ' (Thinking Mode)', finalAnswer);
+  return JSON.stringify(combinedResult);
 }
 
 function getDynamicPresetSystemMessage(presetKey, mode) {
@@ -677,38 +783,7 @@ function processRealUniverseTurbo(userPrompt, presetName, temperature) {
   const combinedSummaries = JSON.stringify(summaries, null, 2);
   const finalContent = 'Based on these summaries:\n\n' + combinedSummaries + '\n\nAnswer the user request: "' + userPrompt + '"';
 
-  // ⭐ เพิ่ม Chain of Thought Instruction สำหรับ Turbo Mode
-  const finalSystemMessage = reduceSystemMessage + '\n\nADDITIONAL CONTEXT: You are analyzing summaries from multiple data chunks. Combine insights from all chunks to create a comprehensive big picture analysis.\n\n' +
-    '⭐ IMPORTANT - THINKING PROCESS:\n' +
-  'Think out loud as you synthesize data from multiple chunks - like having an internal conversation.\n' +
-  'Show your REAL-TIME thinking process, not a report of finished work.\n\n' +
-  'Return your response in JSON format:\n' +
-  '{\n' +
-  '  "thinking": [\n' +
-  '    "เริ่มรวบรวมข้อมูลจาก ' + dataChunks.length + ' ส่วน... ดูเหมือนจะมีข้อมูลเยอะมาก",\n' +
-  '    "อืม ลองดูสรุปจากแต่ละส่วน... แต่ละส่วนพูดถึง [หัวข้อ]",\n' +
-  '    "น่าสนใจ มีแนวโน้ม [สิ่งที่สังเกต]... ฉันจะลองเชื่อมโยงดู",\n' +
-  '    "เอาล่ะ เชื่อมโยงแล้วมาดูภาพรวม... โอ้ [สิ่งที่ค้นพบ]",\n' +
-  '    "เห็น [pattern] ที่ชัดเจน น่าจะ [การตีความ]",\n' +
-  '    "ลองสังเคราะห์ข้อมูลทั้งหมด... [ข้อสรุปเบื้องต้น]",\n' +
-  '    "โอเค เห็นแล้ว [final insight] ได้ข้อสรุปแล้ว"\n' +
-  '  ],\n' +
-  '  "answer": "คำตอบสมบูรณ์ของคุณ 1000-1500 คำ"\n' +
-  '}\n\n' +
-  'CRITICAL RULES FOR NATURAL THINKING:\n' +
-  '- Write as if you are CURRENTLY synthesizing data in real-time\n' +
-  '- Use conversational Thai: อืม, โอ้, เอาล่ะ, โอเค, น่าสนใจ\n' +
-  '- Use present progressive: เห็น, ลอง, ดู, รวบรวม (NOT: พบว่า, วิเคราะห์แล้ว)\n' +
-  '- Show thought progression: start → explore → connect → synthesize → conclude\n' +
-  '- Show uncertainty: ดูเหมือนจะ, น่าจะ, บางที\n' +
-  '- Say what you are doing: "ฉันจะลอง...", "มาดู..."\n' +
-  '- End with: "โอเค เห็นแล้ว [conclusion] ได้ข้อสรุปแล้ว"\n' +
-  '- 6-9 thinking steps\n' +
-  '- Each analysis must be UNIQUE to the data\n' +
-  '- answer must be comprehensive (1000-1500 words)\n' +
-  '- Start answer with "🤓 ได้เลยครับตามที่คุณต้องการให้ [คำสั่ง]"\n' +
-  '- End answer with "หวังว่าข้อมูลนี้จะตอบโจทย์ที่ต้องการนะครับ😊"\n' +
-  '- Return ONLY valid JSON, no additional text';
+  const finalSystemMessage = reduceSystemMessage + '\n\nADDITIONAL CONTEXT: You are analyzing summaries from multiple data chunks. Combine insights from all chunks to create a comprehensive big picture analysis.\n\nRESPONSE REQUIREMENTS:\n- Provide detailed analysis with specific examples and numbers\n- Answer must be between 1000-1500 words\n- Include comprehensive insights from all data chunks\n\n- เริ่มตอบด้วย "🤓 ได้เลยครับตามที่คุณต้องการให้ [คำสั่ง]" และจบด้วย "หวังว่าข้อมูลนี้จะตอบโจทย์ที่ต้องการนะครับ😊"';
 
   const finalPayload = {
     model: config.model,
@@ -717,25 +792,16 @@ function processRealUniverseTurbo(userPrompt, presetName, temperature) {
       { role: 'user', content: finalContent }
     ],
     temperature: temperature,
-    max_tokens: config.max_tokens,
-    response_format: { "type": "json_object" }
+    max_tokens: config.max_tokens
   };
 
-  const rawResult = makeRealUniverseApiCallWithRetry(finalPayload);
-  
-  // ⭐ Parse JSON Response
-  const parsedResult = parseThinkingResponse(rawResult);
-  
-  saveRealUniverseHistory(userPrompt + ' (Turbo)', parsedResult.answer);
-  return parsedResult;
+  const result = makeRealUniverseApiCallWithRetry(finalPayload);
+  saveRealUniverseHistory(userPrompt + ' (Turbo)', result);
+  return result;
 }
 
-/**
- * ⭐ NEW FUNCTION: Parse JSON response with thinking steps
- */
 function parseThinkingResponse(rawResponse) {
   try {
-    // ลบ markdown code blocks ถ้ามี
     let cleanedResponse = rawResponse.trim();
     if (cleanedResponse.startsWith('```json')) {
       cleanedResponse = cleanedResponse.replace(/^```json\s*/, '').replace(/\s*```$/, '');
@@ -745,15 +811,13 @@ function parseThinkingResponse(rawResponse) {
 
     const parsed = JSON.parse(cleanedResponse);
 
-    // ตรวจสอบ structure
-    if (parsed.thinking && Array.isArray(parsed.thinking) && parsed.answer) {
+    if (parsed.thinking && Array.isArray(parsed.thinking) && parsed.thinking.length > 0) {
       return {
-        thinking: parsed.thinking.slice(0, 10), // จำกัดไม่เกิน 10 steps
-        answer: parsed.answer
+        thinking: parsed.thinking.slice(0, 15),
+        answer: parsed.answer || null
       };
     }
 
-    // Fallback: ถ้าไม่มี thinking
     return {
       thinking: null,
       answer: parsed.answer || rawResponse
@@ -763,7 +827,6 @@ function parseThinkingResponse(rawResponse) {
     Logger.log('Error parsing thinking response: ' + e.message);
     Logger.log('Raw response: ' + rawResponse);
     
-    // Fallback: return raw response without thinking
     return {
       thinking: null,
       answer: rawResponse
@@ -771,9 +834,6 @@ function parseThinkingResponse(rawResponse) {
   }
 }
 
-/**
- * [OPTIMIZED] Helper function to get row metadata for the entire sheet using Sheets API.
- */
 function getSheetRowMetadata(sheet) {
   const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
   const sheetName = sheet.getName();
@@ -1087,38 +1147,28 @@ function processRealUniverseImage(prompt, preset, temperature) {
 
 /* ------------------ API AND HELPER FUNCTIONS ------------------ */
 
-/**
- * Decide which API to use.
- * - 'responses' for GPT-5 family, gpt-5-codex, codex-mini-latest, and o-series
- * - 'chat' for others (e.g., gpt-4.1)
- */
 function getApiTypeForModel(modelName) {
   if (!modelName) return 'chat';
   const m = String(modelName).toLowerCase();
 
   const isGpt5 = m.startsWith('gpt-5');
   const isCodexMini = m.includes('codex-mini');
-  const isOseries = m.startsWith('o'); // o3, o4, o4-mini, ฯลฯ
+  const isOseries = m.startsWith('o');
   const isGpt5Codex = m.includes('gpt-5-codex');
 
   if (isGpt5 || isCodexMini || isOseries || isGpt5Codex) return 'responses';
   return 'chat';
 }
 
-/**
- * Build request body for the chosen API from a chat-style logical payload.
- * NOTE: Responses API — ไม่ส่ง temperature (บางรุ่นไม่รองรับ)
- */
 function buildRequestBodyForApi(apiType, payload) {
   const { model, messages, temperature, max_tokens, response_format } = payload || {};
   if (apiType === 'responses') {
     const body = {
       model: model,
       input: messages
-      // ไม่ส่ง temperature ใน Responses API เพื่อหลีกเลี่ยง Unsupported parameter
     };
     if (typeof max_tokens !== 'undefined') {
-      body.max_output_tokens = max_tokens; // map เฉพาะไปยังชื่อที่รองรับ
+      body.max_output_tokens = max_tokens;
     }
     if (response_format) {
       body.response_format = response_format;
@@ -1142,9 +1192,6 @@ function buildRequestBodyForApi(apiType, payload) {
   }
 }
 
-/**
- * Extract text from API response.
- */
 function extractTextFromApiResponse(apiType, resJson) {
   try {
     if (apiType === 'responses') {
@@ -1188,9 +1235,6 @@ function extractTextFromApiResponse(apiType, resJson) {
   }
 }
 
-/**
- * Make API call (auto-route).
- */
 function makeRealUniverseApiCall(payload) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('REALUNIVERSE_API_KEY');
   if (!apiKey) throw new Error('API Key not set. Please use the menu to set it up.');
@@ -1312,7 +1356,7 @@ function insertImageToSheet(imageUrl, description) {
   }
 }
 
-function getRealUniverseSystemMessage(cellReference, mode = 'action') {
+function getRealUniverseSystemMessage(cellReference, mode) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Preset');
 
   if (!sheet) {
@@ -1445,11 +1489,6 @@ function getRealUniverseSelectedCellInfo() {
   }
 }
 
-function getRealUniverseHtmlContent() {
-  return '<div style="font-family:Arial;padding:8px;">RealUniverse AI is ready.</div>';
-}
-
-
 /**
  * Generate the complete HTML content for the AI interface
  */
@@ -1530,7 +1569,7 @@ body {
     align-items: flex-end;
 }
 
-/* ⭐ NEW: Thinking Box Styles */
+/* ⭐ Thinking Box Styles */
 .thinking-box {
     background: #f8f9fa;
     border: 1px solid #e5e5e7;
@@ -1559,6 +1598,8 @@ body {
     border-left: 2px solid #8360c3;
     color: #424245;
     line-height: 1.6;
+    opacity: 0;
+    transform: translateY(-5px);
 }
 
 .message-content {
@@ -1660,7 +1701,7 @@ body {
     position: relative;
 }
 
-/* Sidebar Mode - Keep Dialog Layout */
+/* Sidebar Mode */
 .sidebar-mode .expanded-input-container {
     max-width: none;
     width: 100%;
@@ -1681,27 +1722,26 @@ body {
     text-align: center;
     flex: none;
 }
-
 .sidebar-mode .in-box-controls {
     flex-wrap: wrap;
     gap: 4px;
 }
-
 .sidebar-mode .status-text {
     font-size: 9px;
     padding: 3px 6px;
 }
-
 .sidebar-mode .turbo-toggle {
     font-size: 9px;
     padding: 3px 6px;
 }
-
+.sidebar-mode .thinking-toggle {
+    font-size: 9px;
+    padding: 3px 6px;
+}
 .sidebar-mode .hamburger-btn {
     padding: 3px 6px;
     font-size: 10px;
 }
-
 .sidebar-mode .sendButton {
     width: 28px;
     height: 28px;
@@ -1729,7 +1769,6 @@ body {
     padding-left: 40px;
     position: relative;
 }
-
 .app-title::before {
     content: '';
     position: absolute;
@@ -1755,6 +1794,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: flex-start;
+    gap: 8px;
 }
 .turbo-toggle {
     display: flex;
@@ -1773,11 +1813,32 @@ body {
 .turbo-toggle.active {
     background: #b3e5fc;
     color: #1d1d1f;
+    border-color: #b3e5fc;
 }
 .turbo-status {
     font-size: 9px;
     color: #86868b;
-    margin-left: 8px;
+}
+
+/* ⭐ NEW: Thinking Mode Toggle */
+.thinking-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid #d1d5db;
+    cursor: pointer;
+    font-size: 10px;
+    color: #86868b;
+    outline: none;
+    transition: all 0.2s ease;
+}
+.thinking-toggle.active {
+    background: #ddd6fe;
+    color: #1d1d1f;
+    border-color: #8360c3;
 }
 
 .send-button {
@@ -1827,7 +1888,6 @@ body {
     animation: spin 1s linear infinite;
 }
 
-/* New Expanded Input Layout */
 .expanded-input-container {
     width: 100%;
     max-width: 400px;
@@ -1870,7 +1930,6 @@ body {
     color: #86868b;
 }
 
-/* Controls in input box */
 .in-box-controls {
    display: flex;
    align-items: center;
@@ -1890,7 +1949,6 @@ body {
     font-size: 12px;
     transition: all 0.2s ease;
 }
-
 .hamburger-btn:hover {
     background: rgba(255,255,255,0.5);
     color: #1d1d1f;
@@ -1924,12 +1982,10 @@ body {
     background-position: center;
     transition: all 0.2s ease;
 }
-
 .sendButton:hover {
     background-color: white;
     transform: scale(1.05);
 }
-
 .sendButton:disabled {
     background-color: #f5f5f5;
     background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
@@ -1937,7 +1993,6 @@ body {
     cursor: not-allowed;
     opacity: 0.6;
 }
-
 .sendButton:disabled.spinning {
     animation: spin 1s linear infinite !important;
     background-color: #f5f5f5 !important;
@@ -1946,12 +2001,10 @@ body {
     cursor: not-allowed !important;
     opacity: 0.6 !important;
 }
-
 .sendButton.spinning {
     animation: spin 1s linear infinite;
 }
 
-/* Settings Menu */
 .settings-popup {
     position: absolute;
     bottom: calc(100% + 8px);
@@ -1966,28 +2019,23 @@ body {
     display: none;
     z-index: 1000;
 }
-
 .settings-popup.show {
     display: block;
 }
-
 .popup-section {
     margin-bottom: 12px;
 }
-
 .popup-title {
     font-size: 12px;
     font-weight: 600;
     color: #1d1d1f;
     margin-bottom: 6px;
 }
-
 .popup-options {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
 }
-
 .popup-option {
     padding: 4px 8px;
     background: #f8f9fa;
@@ -1997,11 +2045,9 @@ body {
     cursor: pointer;
     transition: all 0.2s ease;
 }
-
 .popup-option:hover {
     background: #e5e5e7;
 }
-
 .popup-option.active {
     background: #8360c3;
     color: white;
@@ -2072,7 +2118,6 @@ body {
     width: 100%;
 }
 
-/* Quick Actions Styles */
 .quick-actions {
     padding: 8px 16px 12px 16px;
     background: transparent;
@@ -2090,7 +2135,6 @@ body {
     max-height: 100px;
     margin-top: 8px;
 }
-
 .quick-actions:hover .quick-actions-label {
     color: #1d1d1f;
 }
@@ -2143,17 +2187,22 @@ body {
     </div>
 
     <div class="input-area">
-        <!-- Quick Action Buttons -->
         <div class="quick-actions" id="quick-actions">
             <div class="quick-actions-label">⚡️Quick Action</div>
             <div class="quick-actions-buttons">
                 <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูล')">วิเคราะห์ข้อมูล</button>
                 <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูลพร้อมสัดส่วน')">วิเคราะห์ข้อมูลพร้อมสัดส่วน</button>
                 <button class="quick-action-btn" onclick="sendQuickAction('ค้นหาประเด็นสำคัญ')">ค้นหาประเด็นสำคัญ</button>
+</div>
+        </div>
+
+        <div class="turbo-wrapper">
+            <div class="turbo-container">
+                <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()">💡 Deep</button>
+                <button class="thinking-toggle" id="thinking-toggle" onclick="toggleThinking()">🧠 Thinking</button>
             </div>
         </div>
 
-        <!-- New Expanded Input Container -->
         <div class="expanded-input-container">
             <div class="input-content">
                 <textarea
@@ -2163,688 +2212,756 @@ body {
                     rows="1"
                 ></textarea>
                 
-                <!-- Controls in input box -->
                 <div class="in-box-controls">
                     <button class="hamburger-btn" onclick="toggleSettingsPopup()">👁</button>
                     <span class="status-text" id="statusText">Answer • Loading... • Exact</span>
-                    <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()" style="display: none;">💡 Deep</button>
-                    
-                    <!-- Settings Popup -->
-                    <div class="settings-popup" id="settingsPopup">
-                        <div class="popup-section">
-                            <div class="popup-title">🎯 Mode</div>
-<div class="popup-options">
-    <div class="popup-option active" onclick="selectPopupMode('Answer', this, 'action')">Answer</div>
-    <div class="popup-option" onclick="selectPopupMode('Array', this, 'array')">Array</div>
-    <div class="popup-option" onclick="selectPopupMode('Create Picture', this, 'image')">Create Picture</div>
-</div>
-                        </div>
-                        
-                        <div class="popup-section">
-                            <div class="popup-title">⚙️ Preset</div>
-                            <div class="popup-options" id="popupPresetOptions">
-                                <div style="padding: 12px; text-align: center; font-size: 10px; color: #86868b;">
-                                    Loading presets...
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="popup-section">
-                            <div class="popup-title">🎓 AI Creativity</div>
-                            <div class="popup-options">
-                                <div class="popup-option active" onclick="selectPopupTemp('Exact', this, 0)">Exact</div>
-<div class="popup-option" onclick="selectPopupTemp('Focused', this, 0.2)">Focused</div>
-                                <div class="popup-option" onclick="selectPopupTemp('Balance', this, 0.5)">Balance</div>
-                                <div class="popup-option" onclick="selectPopupTemp('Creative', this, 0.7)">Creative</div>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
             
-            <button class="sendButton" id="sendButton" onclick="sendMessage()"></button>
+            <button class="sendButton" id="sendButton" onclick="handleSend()"></button>
+        </div>
+    </div>
+
+    <div class="settings-popup" id="settingsPopup">
+        <div class="popup-section">
+            <div class="popup-title">🎯 Mode</div>
+            <div class="popup-options" id="modeOptions">
+                <div class="popup-option active" data-mode="action">Answer</div>
+                <div class="popup-option" data-mode="array">Array</div>
+                <div class="popup-option" data-mode="image">Create Picture</div>
+            </div>
         </div>
         
-        <div id="selected-cell" class="array-info">Selected: No data selected</div>
+        <div class="popup-section" id="actionPresetSection">
+            <div class="popup-title">📋 Preset (Answer Mode)</div>
+            <div class="popup-options" id="actionPresetOptions"></div>
+        </div>
+        
+        <div class="popup-section" id="arrayPresetSection" style="display: none;">
+            <div class="popup-title">📋 Preset (Array Mode)</div>
+            <div class="popup-options" id="arrayPresetOptions"></div>
+        </div>
+
+        <div class="popup-section" id="imagePresetSection" style="display: none;">
+            <div class="popup-title">🎨 Preset (Image Mode)</div>
+            <div class="popup-options" id="imagePresetOptions"></div>
+        </div>
+        
+        <div class="popup-section" id="temperatureSection">
+            <div class="popup-title">🌡️ Temperature</div>
+            <div class="popup-options" id="temperatureOptions">
+                <div class="popup-option active" data-temp="0">Exact</div>
+                <div class="popup-option" data-temp="0.2">Balanced</div>
+                <div class="popup-option" data-temp="0.4">Expressive</div>
+                <div class="popup-option" data-temp="0.7">Creative</div>
+            </div>
+        </div>
     </div>
 </div>
+
 <script>
 let currentMode = 'action';
-let currentPreset = null;
+let currentPreset = 'action_preset_2';
 let currentTemperature = 0;
+let turboMode = false;
+let thinkingMode = false; // ⭐ NEW
+let isProcessing = false;
 let isTyping = false;
 let currentTypingElement = null;
 let currentTypingText = '';
-let turboMode = false;
+let allPresets = { action: {}, array: {}, image: {} };
 
-// Dynamic presets storage
-let dynamicPresets = null;
-let presetDescriptions = {};
-
-function parseMarkdown(text) {
-   return text.replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>');
+/**
+ * Initialize the app
+ */
+function init() {
+    loadPresets();
+    setupEventListeners();
+    updateSendButton();
+    updateStatusText();
+    checkDisplayMode();
 }
 
-function convertLinksToClickable(text) {
-   return text.replace(/(https?:\\/\\/[^\\s<>]+)/g, 
-       '<a href="$1" target="_blank" style="color: #0066cc; text-decoration: underline;">Link</a>');
+/**
+ * Check and apply display mode
+ */
+function checkDisplayMode() {
+    google.script.run
+        .withSuccessHandler(function(mode) {
+            const container = document.getElementById('main-container');
+            if (mode === 'sidebar') {
+                container.classList.add('sidebar-mode');
+            } else {
+                container.classList.remove('sidebar-mode');
+            }
+        })
+        .getCurrentDisplayMode();
 }
 
-function copyToClipboard(text, button) {
-   try {
-       const tempDiv = document.createElement('div');
-       tempDiv.innerHTML = text;
-       const plainText = tempDiv.textContent || tempDiv.innerText || '';
-       
-       navigator.clipboard.writeText(plainText).then(() => {
-           button.innerHTML = '☑';
-           button.classList.add('copied');
-           button.setAttribute('data-tooltip', 'Copied!');
-           
-           setTimeout(() => {
-               button.innerHTML = '🗒';
-               button.classList.remove('copied');
-               button.setAttribute('data-tooltip', 'Copy');
-           }, 2000);
-       }).catch(() => {
-           const textArea = document.createElement('textarea');
-           textArea.value = plainText;
-           textArea.style.position = 'fixed';
-           textArea.style.opacity = '0';
-           document.body.appendChild(textArea);
-           textArea.select();
-           document.execCommand('copy');
-           document.body.removeChild(textArea);
-           
-           button.innerHTML = '☑';
-           button.classList.add('copied');
-           button.setAttribute('data-tooltip', 'Copied!');
-           
-           setTimeout(() => {
-               button.innerHTML = '🗒';
-               button.classList.remove('copied');
-               button.setAttribute('data-tooltip', 'Copy');
-           }, 2000);
-       });
-   } catch (error) {
-       console.error('Copy failed:', error);
-       button.setAttribute('data-tooltip', 'Copy failed');
-       setTimeout(() => {
-           button.setAttribute('data-tooltip', 'Copy');
-       }, 2000);
-   }
+/**
+ * Toggle display mode
+ */
+function toggleDisplayMode() {
+    google.script.run.toggleDisplayMode();
 }
 
-function toggleTurbo() {
-   turboMode = !turboMode;
-   const turboToggle = document.getElementById('turbo-toggle');
-   const turboStatus = document.getElementById('turbo-status');
-
-   if (turboMode) {
-       turboToggle.classList.add('active');
-       turboStatus.textContent = 'Expanded Data Analysis Active';
-   } else {
-       turboToggle.classList.remove('active');
-       turboStatus.textContent = '';
-   }
+/**
+ * Load presets from server
+ */
+function loadPresets() {
+    google.script.run
+        .withSuccessHandler(function(presets) {
+            allPresets = presets;
+            populatePresetOptions('action', presets.action);
+            populatePresetOptions('array', presets.array);
+            populatePresetOptions('image', presets.image);
+            
+            const firstActionKey = Object.keys(presets.action)[0];
+            if (firstActionKey) currentPreset = firstActionKey;
+            
+            updateStatusText();
+        })
+        .withFailureHandler(function(error) {
+            console.error('Failed to load presets:', error);
+            addMessage('⚠️ ไม่สามารถโหลด Presets ได้: ' + error.message, 'bot');
+        })
+        .getDynamicPresets();
 }
 
-// New Popup Functions for Hamburger Menu
+/**
+ * Populate preset options in settings popup
+ */
+function populatePresetOptions(mode, presets) {
+    const containerId = mode + 'PresetOptions';
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    Object.keys(presets).forEach((key, index) => {
+        const option = document.createElement('div');
+        option.className = 'popup-option';
+        option.textContent = presets[key].DISPLAY_NAME;
+        option.setAttribute('data-preset', key);
+        
+        if (index === 0 && mode === 'action') {
+            option.classList.add('active');
+        }
+        
+        option.onclick = function() {
+            const siblings = container.querySelectorAll('.popup-option');
+            siblings.forEach(s => s.classList.remove('active'));
+            this.classList.add('active');
+            currentPreset = key;
+            updateStatusText();
+        };
+        
+        container.appendChild(option);
+    });
+}
+
+/**
+ * Setup event listeners
+ */
+function setupEventListeners() {
+    const input = document.getElementById('messageInput');
+    
+    input.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+    });
+    
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+        }
+    });
+    
+    const modeOptions = document.querySelectorAll('#modeOptions .popup-option');
+    modeOptions.forEach(option => {
+        option.onclick = function() {
+            modeOptions.forEach(o => o.classList.remove('active'));
+            this.classList.add('active');
+            
+            const mode = this.getAttribute('data-mode');
+            currentMode = mode;
+            
+            document.getElementById('actionPresetSection').style.display = mode === 'action' ? 'block' : 'none';
+            document.getElementById('arrayPresetSection').style.display = mode === 'array' ? 'block' : 'none';
+            document.getElementById('imagePresetSection').style.display = mode === 'image' ? 'block' : 'none';
+            document.getElementById('temperatureSection').style.display = mode === 'image' ? 'none' : 'block';
+            
+            const turboToggle = document.getElementById('turbo-toggle');
+            const thinkingToggle = document.getElementById('thinking-toggle');
+            const turboWrapper = document.querySelector('.turbo-wrapper');
+            
+            if (mode === 'action') {
+                turboWrapper.style.display = 'flex';
+                const firstActionKey = Object.keys(allPresets.action)[0];
+                if (firstActionKey) currentPreset = firstActionKey;
+            } else if (mode === 'array') {
+                turboWrapper.style.display = 'none';
+                turboMode = false;
+                thinkingMode = false;
+                turboToggle.classList.remove('active');
+                thinkingToggle.classList.remove('active');
+                const firstArrayKey = Object.keys(allPresets.array)[0];
+                if (firstArrayKey) currentPreset = firstArrayKey;
+            } else if (mode === 'image') {
+                turboWrapper.style.display = 'none';
+                turboMode = false;
+                thinkingMode = false;
+                turboToggle.classList.remove('active');
+                thinkingToggle.classList.remove('active');
+                const firstImageKey = Object.keys(allPresets.image)[0];
+                if (firstImageKey) currentPreset = firstImageKey;
+            }
+            
+            updateStatusText();
+        };
+    });
+    
+    const tempOptions = document.querySelectorAll('#temperatureOptions .popup-option');
+    tempOptions.forEach(option => {
+        option.onclick = function() {
+            tempOptions.forEach(o => o.classList.remove('active'));
+            this.classList.add('active');
+            currentTemperature = parseFloat(this.getAttribute('data-temp'));
+            updateStatusText();
+        };
+    });
+    
+    document.addEventListener('click', function(e) {
+        const popup = document.getElementById('settingsPopup');
+        const hamburger = document.querySelector('.hamburger-btn');
+        
+        if (popup.classList.contains('show') && 
+            !popup.contains(e.target) && 
+            !hamburger.contains(e.target)) {
+            popup.classList.remove('show');
+        }
+    });
+}
+
+/**
+ * Toggle settings popup
+ */
 function toggleSettingsPopup() {
-   const popup = document.getElementById('settingsPopup');
-   popup.classList.toggle('show');
+    const popup = document.getElementById('settingsPopup');
+    popup.classList.toggle('show');
 }
 
-function selectPopupMode(modeName, element, modeValue) {
-   currentMode = modeValue;
-   document.querySelectorAll('#settingsPopup .popup-section:nth-child(1) .popup-option').forEach(option => {
-       option.classList.remove('active');
-   });
-   element.classList.add('active');
-   updateMode();
-   updateStatusText();
+/**
+ * Toggle turbo mode
+ */
+function toggleTurbo() {
+    turboMode = !turboMode;
+    const toggle = document.getElementById('turbo-toggle');
+    
+    if (turboMode) {
+        toggle.classList.add('active');
+        thinkingMode = false; // ⭐ Disable thinking when turbo enabled
+        document.getElementById('thinking-toggle').classList.remove('active');
+    } else {
+        toggle.classList.remove('active');
+    }
+    
+    updateStatusText();
 }
 
-function selectPopupPreset(presetName, element, presetValue) {
-   currentPreset = presetValue;
-   document.querySelectorAll('#popupPresetOptions .popup-option').forEach(option => {
-       option.classList.remove('active');
-   });
-   element.classList.add('active');
-   updateStatusText();
+/**
+ * ⭐ NEW: Toggle thinking mode
+ */
+function toggleThinking() {
+    thinkingMode = !thinkingMode;
+    const toggle = document.getElementById('thinking-toggle');
+    
+    if (thinkingMode) {
+        toggle.classList.add('active');
+        turboMode = false; // Disable turbo when thinking enabled
+        document.getElementById('turbo-toggle').classList.remove('active');
+    } else {
+        toggle.classList.remove('active');
+    }
+    
+    updateStatusText();
 }
 
-function selectPopupTemp(tempName, element, tempValue) {
-   currentTemperature = tempValue;
-   document.querySelectorAll('#settingsPopup .popup-section:nth-child(3) .popup-option').forEach(option => {
-       option.classList.remove('active');
-   });
-   element.classList.add('active');
-   updateStatusText();
-}
-
+/**
+ * Update status text
+ */
 function updateStatusText() {
-   const mode = document.querySelector('#settingsPopup .popup-section:nth-child(1) .popup-option.active').textContent;
-   const preset = document.querySelector('#popupPresetOptions .popup-option.active')?.textContent || 'Loading...';
-   const creativity = document.querySelector('#settingsPopup .popup-section:nth-child(3) .popup-option.active').textContent;
-   
-   const statusText = \`\${mode} • \${preset} • \${creativity}\`;
-   document.getElementById('statusText').textContent = statusText;
+    const statusText = document.getElementById('statusText');
+    let modeText = currentMode === 'action' ? 'Answer' : 
+                   currentMode === 'array' ? 'Array' : 'Picture';
+    
+    let presetName = 'Loading...';
+    if (allPresets[currentMode] && allPresets[currentMode][currentPreset]) {
+        presetName = allPresets[currentMode][currentPreset].DISPLAY_NAME;
+    }
+    
+    let tempText = currentTemperature === 0 ? 'Exact' :
+                   currentTemperature === 0.2 ? 'Balanced' :
+                   currentTemperature === 0.4 ? 'Expressive' : 'Creative';
+    
+    statusText.textContent = modeText + ' • ' + presetName + ' • ' + tempText;
 }
 
 /**
-* Load dynamic presets from backend
-*/
-function loadDynamicPresets() {
-   google.script.run
-       .withSuccessHandler(presets => {
-           dynamicPresets = presets;
-           updatePopupPresetsUI(presets);
-           loadPresetDescriptions();
-       })
-       .withFailureHandler(error => {
-           console.error('Error loading presets:', error);
-           showPopupPresetError(error.message || error.toString());
-       })
-       .getDynamicPresets();
+ * Update send button state
+ */
+function updateSendButton() {
+    const sendButton = document.getElementById('sendButton');
+    
+    if (isProcessing) {
+        sendButton.disabled = true;
+        sendButton.classList.add('spinning');
+    } else if (isTyping) {
+        sendButton.disabled = false;
+        sendButton.classList.remove('spinning');
+    } else {
+        sendButton.disabled = false;
+        sendButton.classList.remove('spinning');
+    }
 }
 
 /**
-* Load preset descriptions for UI
-*/
-function loadPresetDescriptions() {
-   if (!dynamicPresets) return;
-   
-   const allPresetKeys = [
-       ...Object.keys(dynamicPresets.action || {}),
-       ...Object.keys(dynamicPresets.array || {})
-   ];
-   
-   allPresetKeys.forEach(key => {
-       google.script.run
-           .withSuccessHandler(description => {
-               presetDescriptions[key] = description;
-           })
-           .withFailureHandler(() => {
-               presetDescriptions[key] = 'ไม่มีคำอธิบาย';
-           })
-           .getPresetDescriptionByKey(key);
-   });
+ * Handle send button click
+ */
+function handleSend() {
+    if (isTyping) {
+        skipTyping();
+        return;
+    }
+    
+    const input = document.getElementById('messageInput');
+    const message = input.value.trim();
+    
+    if (!message || isProcessing) return;
+    
+    input.value = '';
+    input.style.height = 'auto';
+    
+    addMessage(message, 'user');
+    sendMessage(message);
 }
 
 /**
-* Update popup presets UI with dynamic data
-*/
-function updatePopupPresetsUI(presets) {
-   const presetContainer = document.getElementById('popupPresetOptions');
-   presetContainer.innerHTML = '';
-
-   const currentPresetList = presets[currentMode] || {};
-   const presetKeys = Object.keys(currentPresetList)
-       .sort((a, b) => currentPresetList[a].ROW_NUMBER - currentPresetList[b].ROW_NUMBER);
-   
-   if (presetKeys.length === 0) {
-       showPopupPresetError(\`❌ ไม่มี \${currentMode === 'action' ? 'Action' : 'Array'} Presets ใน Sheet "Preset"\`);
-       return;
-   }
-   
-   let presetExists = currentPreset && presetKeys.includes(currentPreset);
-   if (!presetExists && presetKeys.length > 0) {
-       currentPreset = presetKeys[0];
-   }
-   
-   presetKeys.forEach(key => {
-       const preset = currentPresetList[key];
-       const option = document.createElement('div');
-       option.className = 'popup-option';
-       option.textContent = preset.DISPLAY_NAME;
-       option.onclick = () => selectPopupPreset(preset.DISPLAY_NAME, option, key);
-       
-       if (key === currentPreset) {
-           option.classList.add('active');
-       }
-       
-       presetContainer.appendChild(option);
-   });
-   
-   updateStatusText();
+ * Send quick action
+ */
+function sendQuickAction(action) {
+    const input = document.getElementById('messageInput');
+    input.value = action;
+    handleSend();
 }
 
 /**
-* Show popup preset error
-*/
-function showPopupPresetError(errorMessage) {
-   const presetContainer = document.getElementById('popupPresetOptions');
-   presetContainer.innerHTML = \`
-       <div style="padding: 12px; color: #dc2626; font-size: 10px; text-align: center; line-height: 1.4;">
-           \${errorMessage.replace(/\\n/g, '<br>')}
-       </div>
-   \`;
-   updateStatusText();
-}
-
-/**
-* Updated updateMode function
-*/
-function updateMode() {
-   const turboToggle = document.getElementById('turbo-toggle');
-   if (currentMode === 'action') {
-       turboToggle.style.display = 'flex';
-   } else {
-       turboToggle.style.display = 'none';
-       turboMode = false;
-       turboToggle.classList.remove('active');
-   }
-   
-   loadDynamicPresets();
-}
-
-function updateSelectedCell() {
-   google.script.run.withSuccessHandler(cellInfo => {
-       const selectedCell = document.getElementById('selected-cell');
-       selectedCell.textContent = 'Data selected: ' + cellInfo;
-   }).getRealUniverseSelectedCellInfo();
-}
-
-/**
- * ⭐ NEW: Add message with thinking animation support
+ * ⭐ UPDATED: Add message with thinking animation support
  */
 function addMessage(text, sender, animate = false) {
-   const messages = document.getElementById('messages');
-   const emptyState = messages.querySelector('.empty-state');
-   if (emptyState) emptyState.remove();
+    const messages = document.getElementById('messages');
+    const emptyState = messages.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
 
-   const messageDiv = document.createElement('div');
-   messageDiv.className = 'message ' + sender;
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message ' + sender;
 
-   // ⭐ Check if response has thinking (for bot messages)
-   if (sender === 'bot' && typeof text === 'object' && text.thinking && Array.isArray(text.thinking)) {
-       // Create thinking box
-       const thinkingBox = document.createElement('div');
-       thinkingBox.className = 'thinking-box';
-       
-       const thinkingHeader = document.createElement('div');
-       thinkingHeader.className = 'thinking-header';
-       thinkingHeader.innerHTML = '💭 AI Thinking Process';
-       
-       const thinkingSteps = document.createElement('div');
-       thinkingSteps.className = 'thinking-steps';
-       
-       thinkingBox.appendChild(thinkingHeader);
-       thinkingBox.appendChild(thinkingSteps);
-       messageDiv.appendChild(thinkingBox);
-       
-       messages.appendChild(messageDiv);
-       scrollToBottom();
-       
-       // ⭐ Animate thinking steps one by one
-       text.thinking.forEach((step, index) => {
-           setTimeout(() => {
-               const stepDiv = document.createElement('div');
-               stepDiv.className = 'thinking-step';
-               stepDiv.textContent = '• ' + step;
-               stepDiv.style.opacity = '0';
-               stepDiv.style.transform = 'translateY(-5px)';
-               thinkingSteps.appendChild(stepDiv);
-               
-               // Fade in animation
-               setTimeout(() => {
-                   stepDiv.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
-                   stepDiv.style.opacity = '1';
-                   stepDiv.style.transform = 'translateY(0)';
-               }, 50);
-               
-               scrollToBottom();
-           }, index * 1500); // 900ms delay between steps
-       });
-       
-       // Wait for all thinking steps, then show answer
-       const totalThinkingTime = text.thinking.length * 700 + 500;
-       setTimeout(() => {
-           // Now create answer content
-           const content = document.createElement('div');
-           content.className = 'message-content';
-           
-           const copyButton = document.createElement('button');
-           copyButton.className = 'copy-button tooltip';
-           copyButton.innerHTML = '🗒';
-           copyButton.setAttribute('data-tooltip', 'Copy');
-           copyButton.onclick = function() {
-               copyToClipboard(content.innerHTML, this);
-           };
-           content.appendChild(copyButton);
-           
-           messageDiv.appendChild(content);
-           scrollToBottom();
-           
-           // Type the answer
-           if (animate) {
-               isTyping = true;
-               currentTypingElement = content;
-               currentTypingText = text.answer;
-               updateSendButton();
-               typeWriterByWord(content, text.answer);
-           } else {
-               const withMarkdown = parseMarkdown(text.answer);
-               content.innerHTML = convertLinksToClickable(withMarkdown);
-               if (!content.querySelector('.copy-button')) {
-                   content.appendChild(copyButton);
-               }
-               messageDiv.classList.add('typing-finished');
-               scrollToBottom();
-           }
-       }, totalThinkingTime);
-       
-       return; // Exit early since we handled thinking
-   }
+    // ⭐ Check if response has thinking (for bot messages)
+    if (sender === 'bot' && typeof text === 'object' && text.thinking && Array.isArray(text.thinking)) {
+        // Create thinking box
+        const thinkingBox = document.createElement('div');
+        thinkingBox.className = 'thinking-box';
+        
+        const thinkingHeader = document.createElement('div');
+        thinkingHeader.className = 'thinking-header';
+        thinkingHeader.innerHTML = '💭 AI Thinking Process';
+        
+        const thinkingSteps = document.createElement('div');
+        thinkingSteps.className = 'thinking-steps';
+        
+        thinkingBox.appendChild(thinkingHeader);
+        thinkingBox.appendChild(thinkingSteps);
+        messageDiv.appendChild(thinkingBox);
+        
+        messages.appendChild(messageDiv);
+        scrollToBottom();
+        
+        // ⭐ Animate thinking steps one by one with typing effect
+        let stepIndex = 0;
+        
+        function addNextStep() {
+            if (stepIndex >= text.thinking.length) {
+                // All thinking steps done, now show answer
+                setTimeout(() => {
+                    const content = document.createElement('div');
+                    content.className = 'message-content';
+                    
+                    const copyButton = document.createElement('button');
+                    copyButton.className = 'copy-button tooltip';
+                    copyButton.innerHTML = '🗒';
+                    copyButton.setAttribute('data-tooltip', 'Copy');
+                    copyButton.onclick = function() {
+                        copyToClipboard(content.innerHTML, this);
+                    };
+                    content.appendChild(copyButton);
+                    
+                    messageDiv.appendChild(content);
+                    scrollToBottom();
+                    
+                    // Type the answer
+                    if (animate) {
+                        isTyping = true;
+                        currentTypingElement = content;
+                        currentTypingText = text.answer;
+                        updateSendButton();
+                        typeWriterByWord(content, text.answer);
+                    } else {
+                        const withMarkdown = parseMarkdown(text.answer);
+                        content.innerHTML = convertLinksToClickable(withMarkdown);
+                        if (!content.querySelector('.copy-button')) {
+                            content.appendChild(copyButton);
+                        }
+                        messageDiv.classList.add('typing-finished');
+                        scrollToBottom();
+                    }
+                }, 500);
+                return;
+            }
+            
+            const step = text.thinking[stepIndex];
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'thinking-step';
+            stepDiv.textContent = '';
+            stepDiv.style.opacity = '0';
+            stepDiv.style.transform = 'translateY(-5px)';
+            thinkingSteps.appendChild(stepDiv);
+            
+            // Fade in
+            setTimeout(() => {
+                stepDiv.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+                stepDiv.style.opacity = '1';
+                stepDiv.style.transform = 'translateY(0)';
+            }, 50);
+            
+            // Type the step text word by word
+            const words = step.split(' ');
+            let wordIndex = 0;
+            
+            function typeNextWord() {
+                if (wordIndex < words.length) {
+                    stepDiv.textContent += (wordIndex > 0 ? ' ' : '• ') + words[wordIndex];
+                    wordIndex++;
+                    scrollToBottom();
+                    setTimeout(typeNextWord, 80); // 80ms per word
+                } else {
+                    // This step finished, move to next
+                    stepIndex++;
+                    setTimeout(addNextStep, 500); // 500ms delay before next step
+                }
+            }
+            
+            typeNextWord();
+        }
+        
+        addNextStep();
+        return; // Exit early since we handled thinking
+    }
 
-   // Regular message (no thinking) - original code
-   const content = document.createElement('div');
-   content.className = 'message-content';
-   
-   if (sender === 'bot') {
-       const copyButton = document.createElement('button');
-       copyButton.className = 'copy-button tooltip';
-       copyButton.innerHTML = '🗒';
-       copyButton.setAttribute('data-tooltip', 'Copy');
-       copyButton.onclick = function() {
-           copyToClipboard(content.innerHTML, this);
-       };
-       content.appendChild(copyButton);
-   }
-   
-   if (sender === 'user' || !animate) {
-       if (sender === 'bot') {
-           const withMarkdown = parseMarkdown(text);
-           content.innerHTML = convertLinksToClickable(withMarkdown);
-           if (!content.querySelector('.copy-button')) {
-               const copyButton = document.createElement('button');
-               copyButton.className = 'copy-button tooltip';
-               copyButton.innerHTML = '🗒';
-               copyButton.setAttribute('data-tooltip', 'Copy');
-               copyButton.onclick = function() {
-                   copyToClipboard(content.innerHTML, this);
-               };
-               content.appendChild(copyButton);
-           }
-       } else {
-           content.textContent = text;
-       }
-   } else {
-       content.innerHTML = '';
-       const copyButton = document.createElement('button');
-       copyButton.className = 'copy-button tooltip';
-       copyButton.innerHTML = '🗒';
-       copyButton.setAttribute('data-tooltip', 'Copy');
-       copyButton.onclick = function() {
-           copyToClipboard(content.innerHTML, this);
-       };
-       content.appendChild(copyButton);
-   }
+    // Regular message (no thinking) - original code
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    
+    if (sender === 'bot') {
+        const copyButton = document.createElement('button');
+        copyButton.className = 'copy-button tooltip';
+        copyButton.innerHTML = '🗒';
+        copyButton.setAttribute('data-tooltip', 'Copy');
+        copyButton.onclick = function() {
+            copyToClipboard(content.innerHTML, this);
+        };
+        content.appendChild(copyButton);
+    }
+    
+    if (sender === 'user' || !animate) {
+        if (sender === 'bot') {
+            const withMarkdown = parseMarkdown(text);
+            content.innerHTML = convertLinksToClickable(withMarkdown);
+            if (!content.querySelector('.copy-button')) {
+                const copyButton = document.createElement('button');
+                copyButton.className = 'copy-button tooltip';
+                copyButton.innerHTML = '🗒';
+                copyButton.setAttribute('data-tooltip', 'Copy');
+                copyButton.onclick = function() {
+                    copyToClipboard(content.innerHTML, this);
+                };
+                content.appendChild(copyButton);
+            }
+        } else {
+            content.textContent = text;
+        }
+    } else {
+        content.innerHTML = '';
+        const copyButton = document.createElement('button');
+        copyButton.className = 'copy-button tooltip';
+        copyButton.innerHTML = '🗒';
+        copyButton.setAttribute('data-tooltip', 'Copy');
+        copyButton.onclick = function() {
+            copyToClipboard(content.innerHTML, this);
+        };
+        content.appendChild(copyButton);
+    }
 
-   messageDiv.appendChild(content);
-   messages.appendChild(messageDiv);
+    messageDiv.appendChild(content);
+    messages.appendChild(messageDiv);
 
-   if (sender === 'bot' && animate) {
-       isTyping = true;
-       currentTypingElement = content;
-       currentTypingText = text;
-       updateSendButton();
-       typeWriterByWord(content, text);
-   } else {
-       scrollToBottom();
-       if (sender === 'bot') {
-           messageDiv.classList.add('typing-finished');
-       }
-   }
+    if (sender === 'bot' && animate) {
+        isTyping = true;
+        currentTypingElement = content;
+        currentTypingText = text;
+        updateSendButton();
+        typeWriterByWord(content, text);
+    } else {
+        scrollToBottom();
+        if (sender === 'bot') {
+            messageDiv.classList.add('typing-finished');
+        }
+    }
 }
 
+/**
+ * Copy content to clipboard
+ */
+function copyToClipboard(html, button) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    
+    const copyBtn = tempDiv.querySelector('.copy-button');
+    if (copyBtn) copyBtn.remove();
+    
+    const text = tempDiv.innerText || tempDiv.textContent;
+    
+    navigator.clipboard.writeText(text).then(() => {
+        const originalTooltip = button.getAttribute('data-tooltip');
+        button.setAttribute('data-tooltip', 'Copied!');
+        button.classList.add('copied');
+        
+        setTimeout(() => {
+            button.setAttribute('data-tooltip', originalTooltip);
+            button.classList.remove('copied');
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+    });
+}
+
+/**
+ * Typewriter effect by word
+ */
 function typeWriterByWord(element, text) {
-   const words = text.split(' ');
-   let wordIndex = 0;
-   
-   const copyButton = element.querySelector('.copy-button');
-   element.innerHTML = '';
-   if (copyButton) {
-       element.appendChild(copyButton);
-   }
-
-   function addNextWord() {
-       if (wordIndex < words.length && isTyping) {
-           const currentText = words.slice(0, wordIndex + 1).join(' ');
-           const withMarkdown = parseMarkdown(currentText);
-           const textContainer = document.createElement('span');
-           textContainer.innerHTML = convertLinksToClickable(withMarkdown);
-           
-           element.innerHTML = '';
-           element.appendChild(textContainer);
-           if (copyButton) {
-               element.appendChild(copyButton);
-           }
-           
-           wordIndex++;
-           scrollToBottom();
-           setTimeout(addNextWord, 150);
-       } else {
-           isTyping = false;
-           updateSendButton();
-           scrollToBottom();
-           const messageDiv = element.closest('.message');
-           if (messageDiv) {
-               messageDiv.classList.add('typing-finished');
-           }
-       }
-   }
-
-   addNextWord();
+    const withMarkdown = parseMarkdown(text);
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = withMarkdown;
+    
+    const textContent = tempDiv.textContent || tempDiv.innerText;
+    const words = textContent.split(/(\s+)/);
+    
+    let currentIndex = 0;
+    let currentText = '';
+    
+    function typeNextWord() {
+        if (currentIndex < words.length && isTyping) {
+            currentText += words[currentIndex];
+            
+            const formatted = parseMarkdown(currentText);
+            element.innerHTML = convertLinksToClickable(formatted);
+            
+            const copyButton = element.querySelector('.copy-button');
+            if (!copyButton) {
+                const btn = document.createElement('button');
+                btn.className = 'copy-button tooltip';
+                btn.innerHTML = '🗒';
+                btn.setAttribute('data-tooltip', 'Copy');
+                btn.onclick = function() {
+                    copyToClipboard(element.innerHTML, this);
+                };
+                element.appendChild(btn);
+            }
+            
+            scrollToBottom();
+            currentIndex++;
+            setTimeout(typeNextWord, 50);
+        } else {
+            const formatted = parseMarkdown(text);
+            element.innerHTML = convertLinksToClickable(formatted);
+            
+            const copyButton = element.querySelector('.copy-button');
+            if (!copyButton) {
+                const btn = document.createElement('button');
+                btn.className = 'copy-button tooltip';
+                btn.innerHTML = '🗒';
+                btn.setAttribute('data-tooltip', 'Copy');
+                btn.onclick = function() {
+                    copyToClipboard(element.innerHTML, this);
+                };
+                element.appendChild(btn);
+            }
+            
+            element.parentElement.classList.add('typing-finished');
+            
+            isTyping = false;
+            currentTypingElement = null;
+            currentTypingText = '';
+            updateSendButton();
+            scrollToBottom();
+        }
+    }
+    
+    typeNextWord();
 }
 
-function stopTyping() {
-   if (isTyping && currentTypingElement && currentTypingText) {
-       isTyping = false;
-       const copyButton = currentTypingElement.querySelector('.copy-button');
-       const withMarkdown = parseMarkdown(currentTypingText);
-       const textContainer = document.createElement('span');
-       textContainer.innerHTML = convertLinksToClickable(withMarkdown);
-       
-       currentTypingElement.innerHTML = '';
-       currentTypingElement.appendChild(textContainer);
-       if (copyButton) {
-           currentTypingElement.appendChild(copyButton);
-       }
-       
-       updateSendButton();
-       scrollToBottom();
-       
-       const messageDiv = currentTypingElement.closest('.message');
-       if (messageDiv) {
-           messageDiv.classList.add('typing-finished');
-       }
-   }
+/**
+ * Skip typing animation
+ */
+function skipTyping() {
+    if (!isTyping || !currentTypingElement || !currentTypingText) return;
+    
+    isTyping = false;
+    
+    const formatted = parseMarkdown(currentTypingText);
+    currentTypingElement.innerHTML = convertLinksToClickable(formatted);
+    
+    const copyButton = currentTypingElement.querySelector('.copy-button');
+    if (!copyButton) {
+        const btn = document.createElement('button');
+        btn.className = 'copy-button tooltip';
+        btn.innerHTML = '🗒';
+        btn.setAttribute('data-tooltip', 'Copy');
+        btn.onclick = function() {
+            copyToClipboard(currentTypingElement.innerHTML, this);
+        };
+        currentTypingElement.appendChild(btn);
+    }
+    
+    currentTypingElement.parentElement.classList.add('typing-finished');
+    
+    currentTypingElement = null;
+    currentTypingText = '';
+    updateSendButton();
+    scrollToBottom();
 }
 
-function updateSendButton() {
-   const sendButton = document.getElementById('sendButton');
-   if (isTyping) {
-       sendButton.classList.add('spinning');
-   } else {
-       sendButton.classList.remove('spinning');
-   }
+/**
+ * Parse markdown
+ */
+function parseMarkdown(text) {
+    if (!text) return '';
+    
+    let parsed = String(text);
+    
+    parsed = parsed.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    parsed = parsed.replace(/\n/g, '<br>');
+    
+    return parsed;
 }
 
-function scrollToBottom() {
-   const messages = document.getElementById('messages');
-   messages.scrollTo({
-       top: messages.scrollHeight,
-       behavior: 'smooth'
-   });
+/**
+ * Convert links to clickable
+ */
+function convertLinksToClickable(text) {
+    if (!text) return '';
+    
+    const urlRegex = /(https?:\/\/[^\s<]+)/g;
+    return text.replace(urlRegex, '<a href="$1" target="_blank" style="color: #0066cc; text-decoration: underline;">$1</a>');
 }
 
-function sendQuickAction(command) {
-   const input = document.getElementById('messageInput');
-   input.value = command;
-   sendMessage();
-}
-
-function sendMessage() {
-   if (isTyping) {
-       stopTyping();
-       return;
-   }
-
-   const input = document.getElementById('messageInput');
-   const sendButton = document.getElementById('sendButton');
-   const question = input.value.trim();
-   if (!question) return;
-
-   if (!currentPreset) {
-       alert('โปรดรอให้ระบบโหลด Presets เสร็จก่อนใช้งาน');
-       return;
-   }
-
-   input.disabled = true;
-   sendButton.disabled = true;
-   isTyping = true;
-   updateSendButton();
-   addMessage(question, 'user', false);
-   input.value = '';
-   input.style.height = 'auto';
-   showTypingIndicator();
-
-   google.script.run
-       .withSuccessHandler(answer => {
-           hideTypingIndicator();
-           input.disabled = false;
-           sendButton.disabled = false;
-           isTyping = false;
-           updateSendButton();
-           input.focus();
-           
-           // ⭐ Handle different response types
-           if (currentMode === 'array' && Array.isArray(answer)) {
-               addMessage(answer[0][0], 'bot', true);
-           } else if (typeof answer === 'object' && answer.thinking && answer.answer) {
-               // ⭐ Response with thinking (from Action or Turbo mode)
-               addMessage(answer, 'bot', true);
-           } else {
-               // Regular response (string)
-               addMessage(answer, 'bot', true);
-           }
-       })
-       .withFailureHandler(error => {
-           hideTypingIndicator();
-           input.disabled = false;
-           sendButton.disabled = false;
-           isTyping = false;
-           updateSendButton();
-           input.focus();
-           addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', true);
-       })
-       .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode);
-}
-
+/**
+ * Show typing indicator
+ */
 function showTypingIndicator() {
-   const messages = document.getElementById('messages');
-   const typingDiv = document.createElement('div');
-   typingDiv.className = 'message bot';
-   typingDiv.id = 'typing-indicator';
+    const messages = document.getElementById('messages');
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'message bot';
+    typingDiv.id = 'typing-indicator';
 
-   const indicator = document.createElement('div');
-   indicator.className = 'typing-indicator';
-   
-   // ⭐ Fake thinking text
-   const thinkingText = document.createElement('div');
-   thinkingText.style.fontSize = '15px';
-   thinkingText.style.color = '#86868b';
-   thinkingText.style.marginTop = '4px';
-   thinkingText.textContent = ' Thinking... ';
-   
-   indicator.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><rect width="10" height="10" x="1" y="1" fill="#8360c3" rx="1"><animate id="svgSpinnersBlocksShuffle30" fill="freeze" attributeName="x" begin="0;svgSpinnersBlocksShuffle3b.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle31" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle38.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle32" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle39.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle33" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle3a.end" dur="0.21s" values="13;1"/></rect><rect width="10" height="10" x="1" y="13" fill="#8360c3" rx="1"><animate id="svgSpinnersBlocksShuffle34" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle30.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle35" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle31.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle36" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle32.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle37" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle33.end" dur="0.21s" values="13;1"/></rect><rect width="10" height="10" x="13" y="13" fill="#8360c3" rx="1"><animate id="svgSpinnersBlocksShuffle38" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle34.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle39" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle35.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle3a" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle36.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle3b" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle37.end" dur="0.21s" values="1;13"/></rect></svg>';
-   indicator.appendChild(thinkingText);
+    const indicator = document.createElement('div');
+    indicator.className = 'typing-indicator';
+    indicator.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><rect width="10" height="10" x="1" y="1" fill="#8360c3" rx="1"><animate id="svgSpinnersBlocksShuffle30" fill="freeze" attributeName="x" begin="0;svgSpinnersBlocksShuffle3b.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle31" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle38.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle32" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle39.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle33" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle3a.end" dur="0.21s" values="13;1"/></rect><rect width="10" height="10" x="1" y="13" fill="#8360c3" rx="1"><animate id="svgSpinnersBlocksShuffle34" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle30.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle35" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle31.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle36" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle32.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle37" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle33.end" dur="0.21s" values="13;1"/></rect><rect width="10" height="10" x="13" y="13" fill="#8360c3" rx="1"><animate id="svgSpinnersBlocksShuffle38" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle34.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle39" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle35.end" dur="0.21s" values="13;1"/><animate id="svgSpinnersBlocksShuffle3a" fill="freeze" attributeName="x" begin="svgSpinnersBlocksShuffle36.end" dur="0.21s" values="1;13"/><animate id="svgSpinnersBlocksShuffle3b" fill="freeze" attributeName="y" begin="svgSpinnersBlocksShuffle37.end" dur="0.21s" values="1;13"/></rect></svg>';
 
-   typingDiv.appendChild(indicator);
-   messages.appendChild(typingDiv);
-   scrollToBottom();
+    typingDiv.appendChild(indicator);
+    messages.appendChild(typingDiv);
+    scrollToBottom();
 }
 
-function hideTypingIndicator() {
-   const indicator = document.getElementById('typing-indicator');
-   if (indicator) indicator.remove();
+/**
+ * Remove typing indicator
+ */
+function removeTypingIndicator() {
+    const indicator = document.getElementById('typing-indicator');
+    if (indicator) indicator.remove();
 }
 
-function toggleDisplayMode() {
-   try {
-       google.script.run
-           .withSuccessHandler(() => {
-               // Backend handles everything
-           })
-           .withFailureHandler(error => {
-               console.error('Error toggling display mode:', error);
-           })
-           .toggleDisplayMode();
-   } catch (e) {
-       console.error('Error calling toggle function:', e);
-   }
+/**
+ * Scroll to bottom
+ */
+function scrollToBottom() {
+    const messages = document.getElementById('messages');
+    setTimeout(() => {
+        messages.scrollTop = messages.scrollHeight;
+    }, 10);
 }
 
-function initializeDisplayMode() {
-   google.script.run
-       .withSuccessHandler(mode => {
-           const container = document.getElementById('main-container');
-           const button = document.getElementById('mode-switch-button');
-           
-           if (mode === 'sidebar') {
-               container.classList.add('sidebar-mode');
-               button.innerHTML = '▢▣';
-           } else {
-               container.classList.remove('sidebar-mode');
-               button.innerHTML = '▢▣';
-           }
-       })
-       .withFailureHandler(() => {
-           const container = document.getElementById('main-container');
-           const button = document.getElementById('mode-switch-button');
-           container.classList.remove('sidebar-mode');
-           button.innerHTML = '▢▣';
-       })
-       .getCurrentDisplayMode();
+/**
+ * ⭐ UPDATED: Send message with thinking mode support
+ */
+function sendMessage(message) {
+    if (isProcessing) return;
+    
+    isProcessing = true;
+    updateSendButton();
+    showTypingIndicator();
+    
+    google.script.run
+        .withSuccessHandler(function(response) {
+            removeTypingIndicator();
+            
+            // ⭐ Check if response is JSON (thinking mode)
+            if (typeof response === 'string' && response.trim().startsWith('{')) {
+                try {
+                    const parsedResponse = JSON.parse(response);
+                    if (parsedResponse.thinking && parsedResponse.answer) {
+                        // Thinking mode response
+                        addMessage(parsedResponse, 'bot', true);
+                        isProcessing = false;
+                        updateSendButton();
+                        return;
+                    }
+                } catch (e) {
+                    // Not JSON, treat as regular response
+                }
+            }
+            
+            // Regular response
+            if (currentMode === 'array') {
+                addMessage(response, 'bot', false);
+            } else {
+                addMessage(response, 'bot', true);
+            }
+            
+            isProcessing = false;
+            updateSendButton();
+        })
+        .withFailureHandler(function(error) {
+            removeTypingIndicator();
+            addMessage('❌ Error: ' + error.message, 'bot', false);
+            isProcessing = false;
+            updateSendButton();
+        })
+        .processRealUniverseAI(message, currentPreset, currentTemperature, currentMode, turboMode, thinkingMode);
 }
 
-// Close popup when clicking outside
-document.addEventListener('click', function(event) {
-   const popup = document.getElementById('settingsPopup');
-   const trigger = document.querySelector('.hamburger-btn');
-   
-   if (!popup.contains(event.target) && !trigger.contains(event.target)) {
-       popup.classList.remove('show');
-   }
-});
-
-const messageInput = document.getElementById('messageInput');
-messageInput.addEventListener('input', function() {
-   this.style.height = 'auto';
-   this.style.height = this.scrollHeight + 'px';
-});
-
-messageInput.addEventListener('keypress', function(e) {
-   if (e.key === 'Enter' && e.ctrlKey) {
-       e.preventDefault();
-       sendMessage();
-   } else if (e.key === 'Enter' && !e.shiftKey) {
-       e.preventDefault();
-   }
-});
-
-window.onload = function() {
-   setTimeout(() => {
-       messageInput.focus();
-   }, 100);
-   
-   loadDynamicPresets();
-   updateMode();
-   setInterval(updateSelectedCell, 1000);
-   initializeDisplayMode();
-};
+// Initialize on load
+window.onload = init;
 </script>
 </body>
 </html>`;
