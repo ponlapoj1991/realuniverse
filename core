@@ -1,6 +1,6 @@
 /**
  * ===== REALUNIVERSE AI MASTER LIBRARY =====
- * Version: 1.0.9 (Added Thinking Display for Action & Turbo Mode)
+ * Version: 1.1.0 (Added 2-Step Thinking Mode for Deep Analysis)
  */
 /* ------------------ CONFIGURATION ------------------ */
 const API_URL = 'https://api.openai.com/v1/chat/completions';      // Chat Completions
@@ -27,6 +27,11 @@ const PARALLEL_DELAY_MS = 1000;
 // Array Mode Settings
 const MAX_ROWS_PER_BATCH_ARRAY = 25;
 const MAX_TOTAL_ROWS_ARRAY = 10000;
+
+// 2-Step Thinking Mode Settings
+const THINKING_MODE_STEPS = 2;
+const THINKING_STEP1_MAX_TOKENS = 8000;   // Step 1: Initial Exploration
+const THINKING_STEP2_MAX_TOKENS = 15000;  // Step 2: Deep Synthesis
 
 // UI Settings
 const SIDEBAR_WIDTH = 600;
@@ -289,13 +294,13 @@ function setupRealUniverseApiKey() {
 
 /* ------------------ CORE AI PROCESSING FUNCTIONS ------------------ */
 
-function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false) {
+function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false, thinkingMode = false) {
   try {
     if (mode === 'action') {
       if (turboMode) {
         return processRealUniverseTurbo(prompt, preset, temperature);
       } else {
-        return processRealUniverseStandard(prompt, preset, temperature);
+        return processRealUniverseStandard(prompt, preset, temperature, thinkingMode);
       }
     } else if (mode === 'array') {
       return processRealUniverseArray(prompt, preset, temperature);
@@ -316,7 +321,7 @@ function isNumeric(value) {
   return !isNaN(cleanedValue) && !isNaN(parseFloat(cleanedValue));
 }
 
-function processRealUniverseStandard(prompt, preset, temperature) {
+function processRealUniverseStandard(prompt, preset, temperature, thinkingMode = false) {
   const systemMessage = getRealUniverseSystemMessage(getDynamicPresetSystemMessage(preset, 'action'), 'action');
   const config = MODEL_CONFIG.action_standard;
 
@@ -381,6 +386,14 @@ function processRealUniverseStandard(prompt, preset, temperature) {
       '- ห้ามอ้างอิงเลข Row ที่นำมาวิเคราะห์ในคำตอบเด็ดขาด\n';
 
     enhancedPrompt = formatMixedData(allDataArray, calculations, prompt, rangeInfo);
+  }
+
+  // ⭐ ถ้าเปิด 2-Step Thinking Mode
+  if (thinkingMode) {
+    Logger.log('🧠 2-Step Thinking Mode activated');
+    const result = processWithTwoStepThinking(enhancedPrompt, enhancedSystemMessage, temperature, config);
+    saveRealUniverseHistory(prompt + ' (2-Step Thinking)', result.answer);
+    return result;
   }
 
   // ⭐ เพิ่ม Chain of Thought Instruction
@@ -769,6 +782,129 @@ function parseThinkingResponse(rawResponse) {
       answer: rawResponse
     };
   }
+}
+
+/**
+ * ⭐ 2-STEP THINKING MODE
+ * Process data with deep analysis in 2 API calls:
+ * - Step 1: Initial Exploration & Pattern Recognition
+ * - Step 2: Deep Synthesis & Complete Answer
+ */
+function processWithTwoStepThinking(enhancedPrompt, systemMessage, temperature, config) {
+  const allThinkingSteps = [];
+
+  // === STEP 1: INITIAL EXPLORATION ===
+  const step1SystemMessage = systemMessage + '\n\n' +
+    '⭐ STEP 1/2: INITIAL EXPLORATION & PATTERN RECOGNITION\n' +
+    'You are beginning a deep analysis. This is your first comprehensive look at the data.\n' +
+    'Focus on discovering patterns, trends, and key insights.\n\n' +
+    'Return JSON format:\n' +
+    '{\n' +
+    '  "thinking": [\n' +
+    '    "เริ่มสำรวจข้อมูลอย่างละเอียด... เห็นมี [จำนวน] รายการ",\n' +
+    '    "อืม สังเกตเห็น [pattern] ที่น่าสนใจ...",\n' +
+    '    "ข้อมูลมีลักษณะ [characteristics]...",\n' +
+    '    "พบประเด็นสำคัญ: [key points]",\n' +
+    '    "ต้องขุดลึกเรื่อง [topics] เพิ่มเติม"\n' +
+    '  ],\n' +
+    '  "initial_insights": "สรุปข้อค้นพบเบื้องต้นและ patterns ที่พบ (300-400 คำ)",\n' +
+    '  "focus_areas": ["ประเด็นที่ 1", "ประเด็นที่ 2", "ประเด็นที่ 3"],\n' +
+    '  "data_overview": "ภาพรวมของข้อมูล (100-150 คำ)"\n' +
+    '}\n\n' +
+    'Use conversational Thai in thinking: อืม, โอ้, เอาล่ะ, น่าสนใจ\n' +
+    'Show real-time discovery process, not a finished report.';
+
+  const payload1 = {
+    model: config.model,
+    messages: [
+      { role: 'system', content: step1SystemMessage },
+      { role: 'user', content: enhancedPrompt }
+    ],
+    temperature: temperature,
+    max_tokens: THINKING_STEP1_MAX_TOKENS,
+    response_format: { "type": "json_object" }
+  };
+
+  Logger.log('🔍 2-Step Thinking: Starting Step 1/2 - Initial Exploration');
+  const rawResult1 = makeRealUniverseApiCallWithRetry(payload1);
+  const step1Data = parseThinkingResponse(rawResult1);
+
+  // Parse additional fields from Step 1
+  let step1Full;
+  try {
+    step1Full = JSON.parse(rawResult1.trim().replace(/^```json\s*/, '').replace(/\s*```$/, ''));
+  } catch (e) {
+    step1Full = { initial_insights: step1Data.answer, focus_areas: [], data_overview: '' };
+  }
+
+  allThinkingSteps.push({
+    step: 1,
+    title: 'Initial Exploration',
+    thinking: step1Data.thinking || [],
+    output: step1Full.initial_insights || step1Data.answer
+  });
+
+  // === STEP 2: DEEP SYNTHESIS ===
+  const focusAreasText = step1Full.focus_areas && step1Full.focus_areas.length > 0
+    ? step1Full.focus_areas.join(', ')
+    : 'ประเด็นหลักที่พบ';
+
+  const step2SystemMessage = systemMessage + '\n\n' +
+    '⭐ STEP 2/2: DEEP SYNTHESIS & COMPREHENSIVE ANSWER\n' +
+    'Based on your initial exploration, now create a complete, polished analysis.\n\n' +
+    'CONTEXT FROM STEP 1:\n' +
+    '- Initial Insights: ' + (step1Full.initial_insights || step1Data.answer).substring(0, 500) + '...\n' +
+    '- Focus Areas: ' + focusAreasText + '\n' +
+    '- Data Overview: ' + (step1Full.data_overview || '') + '\n\n' +
+    'Now perform deep synthesis and create comprehensive answer.\n\n' +
+    'Return JSON format:\n' +
+    '{\n' +
+    '  "thinking": [\n' +
+    '    "จากการสำรวจในรอบแรก พบว่า [summary]...",\n' +
+    '    "ตอนนี้มาลงลึกใน [focus area]...",\n' +
+    '    "โอ้ เมื่อดูรายละเอียด พบว่า [deep insight]...",\n' +
+    '    "เชื่อมโยงข้อมูลทั้งหมด... [connections]",\n' +
+    '    "น่าสนใจที่ [interesting finding]...",\n' +
+    '    "โอเค เห็นภาพรวมแล้ว [conclusion]"\n' +
+    '  ],\n' +
+    '  "answer": "คำตอบที่สมบูรณ์และครบถ้วน รวมทุก insights (800-1200 คำ)"\n' +
+    '}\n\n' +
+    'CRITICAL:\n' +
+    '- Use conversational Thai: อืม, โอ้, เอาล่ะ, น่าสนใจ\n' +
+    '- Show synthesis process in thinking\n' +
+    '- Answer must be comprehensive and complete\n' +
+    '- Combine insights from both steps seamlessly';
+
+  const payload2 = {
+    model: config.model,
+    messages: [
+      { role: 'system', content: step2SystemMessage },
+      { role: 'user', content: enhancedPrompt }
+    ],
+    temperature: temperature,
+    max_tokens: THINKING_STEP2_MAX_TOKENS,
+    response_format: { "type": "json_object" }
+  };
+
+  Logger.log('🔍 2-Step Thinking: Starting Step 2/2 - Deep Synthesis');
+  const rawResult2 = makeRealUniverseApiCallWithRetry(payload2);
+  const step2Data = parseThinkingResponse(rawResult2);
+
+  allThinkingSteps.push({
+    step: 2,
+    title: 'Deep Synthesis',
+    thinking: step2Data.thinking || [],
+    output: step2Data.answer
+  });
+
+  Logger.log('✅ 2-Step Thinking: Completed successfully');
+
+  // Return combined result
+  return {
+    thinking: allThinkingSteps,  // Array of { step, title, thinking, output }
+    answer: step2Data.answer,
+    mode: '2-step-thinking'
+  };
 }
 
 /**
