@@ -1910,6 +1910,31 @@ body {
     background: #b3e5fc;
     color: #1d1d1f;
 }
+
+/* ⭐ Thinking Mode Toggle Styles */
+.thinking-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid #d1d5db;
+    cursor: pointer;
+    font-size: 10px;
+    color: #86868b;
+    outline: none;
+    transition: all 0.2s ease;
+}
+.thinking-toggle.active {
+    background: #e3d5ff;
+    color: #1d1d1f;
+    border-color: #8360c3;
+}
+.thinking-toggle:hover {
+    background: #f8f9fa;
+}
+
 .turbo-status {
     font-size: 9px;
     color: #86868b;
@@ -2304,6 +2329,7 @@ body {
                     <button class="hamburger-btn" onclick="toggleSettingsPopup()">👁</button>
                     <span class="status-text" id="statusText">Answer • Loading... • Exact</span>
                     <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()" style="display: none;">💡 Deep</button>
+                    <button class="thinking-toggle" id="thinking-toggle" onclick="toggleThinking()" style="display: none;">🧠 2-Step</button>
                     
                     <!-- Settings Popup -->
                     <div class="settings-popup" id="settingsPopup">
@@ -2352,6 +2378,7 @@ let isTyping = false;
 let currentTypingElement = null;
 let currentTypingText = '';
 let turboMode = false;
+let thinkingMode = false; // ⭐ 2-Step Thinking Mode
 
 // Dynamic presets storage
 let dynamicPresets = null;
@@ -2422,6 +2449,18 @@ function toggleTurbo() {
    } else {
        turboToggle.classList.remove('active');
        turboStatus.textContent = '';
+   }
+}
+
+// ⭐ Toggle 2-Step Thinking Mode
+function toggleThinking() {
+   thinkingMode = !thinkingMode;
+   const thinkingToggle = document.getElementById('thinking-toggle');
+
+   if (thinkingMode) {
+       thinkingToggle.classList.add('active');
+   } else {
+       thinkingToggle.classList.remove('active');
    }
 }
 
@@ -2564,14 +2603,21 @@ function showPopupPresetError(errorMessage) {
 */
 function updateMode() {
    const turboToggle = document.getElementById('turbo-toggle');
+   const thinkingToggle = document.getElementById('thinking-toggle');
+
    if (currentMode === 'action') {
        turboToggle.style.display = 'flex';
+       thinkingToggle.style.display = 'flex'; // ⭐ Show thinking toggle in action mode
    } else {
        turboToggle.style.display = 'none';
        turboMode = false;
        turboToggle.classList.remove('active');
+
+       thinkingToggle.style.display = 'none'; // ⭐ Hide thinking toggle in other modes
+       thinkingMode = false;
+       thinkingToggle.classList.remove('active');
    }
-   
+
    loadDynamicPresets();
 }
 
@@ -2595,47 +2641,114 @@ function addMessage(text, sender, animate = false) {
 
    // ⭐ Check if response has thinking (for bot messages)
    if (sender === 'bot' && typeof text === 'object' && text.thinking && Array.isArray(text.thinking)) {
-       // Create thinking box
-       const thinkingBox = document.createElement('div');
-       thinkingBox.className = 'thinking-box';
-       
-       const thinkingHeader = document.createElement('div');
-       thinkingHeader.className = 'thinking-header';
-       thinkingHeader.innerHTML = '💭 AI Thinking Process';
-       
-       const thinkingSteps = document.createElement('div');
-       thinkingSteps.className = 'thinking-steps';
-       
-       thinkingBox.appendChild(thinkingHeader);
-       thinkingBox.appendChild(thinkingSteps);
-       messageDiv.appendChild(thinkingBox);
-       
-       messages.appendChild(messageDiv);
-       scrollToBottom();
-       
-       // ⭐ Animate thinking steps one by one
-       text.thinking.forEach((step, index) => {
-           setTimeout(() => {
-               const stepDiv = document.createElement('div');
-               stepDiv.className = 'thinking-step';
-               stepDiv.textContent = '• ' + step;
-               stepDiv.style.opacity = '0';
-               stepDiv.style.transform = 'translateY(-5px)';
-               thinkingSteps.appendChild(stepDiv);
-               
-               // Fade in animation
+       // ⭐ Check if 2-Step Thinking Mode (array of objects with step, title, thinking)
+       const is2StepMode = text.thinking.length > 0 && typeof text.thinking[0] === 'object' && text.thinking[0].step;
+
+       if (is2StepMode) {
+           // ⭐ 2-Step Thinking Mode Display
+           let totalDelay = 0;
+
+           text.thinking.forEach((stepData, stepIndex) => {
                setTimeout(() => {
-                   stepDiv.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
-                   stepDiv.style.opacity = '1';
-                   stepDiv.style.transform = 'translateY(0)';
-               }, 50);
-               
-               scrollToBottom();
-           }, index * 1500); // 900ms delay between steps
-       });
-       
+                   // Create thinking box for each step
+                   const thinkingBox = document.createElement('div');
+                   thinkingBox.className = 'thinking-box';
+
+                   const thinkingHeader = document.createElement('div');
+                   thinkingHeader.className = 'thinking-header';
+                   thinkingHeader.innerHTML = `🔍 Step ${stepData.step}/${text.thinking.length}: ${stepData.title}`;
+
+                   const thinkingSteps = document.createElement('div');
+                   thinkingSteps.className = 'thinking-steps';
+
+                   thinkingBox.appendChild(thinkingHeader);
+                   thinkingBox.appendChild(thinkingSteps);
+                   messageDiv.appendChild(thinkingBox);
+
+                   if (stepIndex === 0) {
+                       messages.appendChild(messageDiv);
+                   }
+                   scrollToBottom();
+
+                   // Animate thinking steps for this phase
+                   if (stepData.thinking && Array.isArray(stepData.thinking)) {
+                       stepData.thinking.forEach((thought, thinkIndex) => {
+                           setTimeout(() => {
+                               const stepDiv = document.createElement('div');
+                               stepDiv.className = 'thinking-step';
+                               stepDiv.textContent = '• ' + thought;
+                               stepDiv.style.opacity = '0';
+                               stepDiv.style.transform = 'translateY(-5px)';
+                               thinkingSteps.appendChild(stepDiv);
+
+                               setTimeout(() => {
+                                   stepDiv.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+                                   stepDiv.style.opacity = '1';
+                                   stepDiv.style.transform = 'translateY(0)';
+                               }, 50);
+
+                               scrollToBottom();
+                           }, thinkIndex * 800);
+                       });
+                   }
+               }, totalDelay);
+
+               // Calculate delay for next step
+               const stepThinkingCount = stepData.thinking ? stepData.thinking.length : 0;
+               totalDelay += stepThinkingCount * 800 + 1000;
+           });
+
+           const totalThinkingTime = totalDelay + 500;
+
+       } else {
+           // ⭐ Original Single-Step Thinking Mode
+           // Create thinking box
+           const thinkingBox = document.createElement('div');
+           thinkingBox.className = 'thinking-box';
+
+           const thinkingHeader = document.createElement('div');
+           thinkingHeader.className = 'thinking-header';
+           thinkingHeader.innerHTML = '💭 AI Thinking Process';
+
+           const thinkingSteps = document.createElement('div');
+           thinkingSteps.className = 'thinking-steps';
+
+           thinkingBox.appendChild(thinkingHeader);
+           thinkingBox.appendChild(thinkingSteps);
+           messageDiv.appendChild(thinkingBox);
+
+           messages.appendChild(messageDiv);
+           scrollToBottom();
+
+           // ⭐ Animate thinking steps one by one
+           text.thinking.forEach((step, index) => {
+               setTimeout(() => {
+                   const stepDiv = document.createElement('div');
+                   stepDiv.className = 'thinking-step';
+                   stepDiv.textContent = '• ' + step;
+                   stepDiv.style.opacity = '0';
+                   stepDiv.style.transform = 'translateY(-5px)';
+                   thinkingSteps.appendChild(stepDiv);
+
+                   // Fade in animation
+                   setTimeout(() => {
+                       stepDiv.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+                       stepDiv.style.opacity = '1';
+                       stepDiv.style.transform = 'translateY(0)';
+                   }, 50);
+
+                   scrollToBottom();
+               }, index * 1500); // 900ms delay between steps
+           });
+       }
+
        // Wait for all thinking steps, then show answer
-       const totalThinkingTime = text.thinking.length * 700 + 500;
+       const totalSteps = is2StepMode
+           ? text.thinking.reduce((sum, s) => sum + (s.thinking ? s.thinking.length : 0), 0)
+           : text.thinking.length;
+       const totalThinkingTime = is2StepMode
+           ? text.thinking.reduce((sum, s) => sum + (s.thinking ? s.thinking.length : 0) * 800 + 1000, 500)
+           : text.thinking.length * 700 + 500;
        setTimeout(() => {
            // Now create answer content
            const content = document.createElement('div');
@@ -2876,7 +2989,7 @@ function sendMessage() {
            input.focus();
            addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', true);
        })
-       .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode);
+       .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode, thinkingMode); // ⭐ Send thinkingMode
 }
 
 function showTypingIndicator() {
