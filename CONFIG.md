@@ -2237,6 +2237,7 @@ body {
     padding: 16px 12px;
     background: #F0FFFF;
     scroll-behavior: smooth;
+    position: relative;
 }
 .message {
     margin-bottom: 12px;
@@ -3017,6 +3018,7 @@ body {
     left: 50%;
     transform: translate(-50%, -50%);
     width: 100%;
+    pointer-events: none;
 }
 
 /* Quick Actions Styles */
@@ -3239,6 +3241,7 @@ let currentReasoningSelections = {
 };
 let activeAgentThreadId = null;
 let currentAgentState = null;
+let hasBootstrappedRealUniverseApp = false;
 
 const AGENT_DB_NAME = 'realuniverse-agent-v1';
 const AGENT_DB_VERSION = 1;
@@ -3905,6 +3908,28 @@ function applyInitFallback() {
    }
 }
 
+function bootRealUniverseApp() {
+   if (hasBootstrappedRealUniverseApp) return;
+   hasBootstrappedRealUniverseApp = true;
+
+   const messageInput = document.getElementById('messageInput');
+
+   setTimeout(() => {
+       if (messageInput) {
+           messageInput.focus();
+       }
+   }, 100);
+
+   initializeUiReadyState();
+   loadModelUiConfig(() => {
+       updateMode();
+       refreshIcons();
+   });
+   setTimeout(applyInitFallback, 1500);
+   setInterval(updateSelectedCell, 1000);
+   initializeDisplayMode();
+}
+
 function selectPopupMode(modeName, element, modeValue) {
    currentMode = modeValue;
    document.querySelectorAll('#popupModeOptions .popup-option').forEach(option => {
@@ -4520,41 +4545,36 @@ function initializeDisplayMode() {
 document.addEventListener('click', function(event) {
    const popup = document.getElementById('settingsPopup');
    const trigger = document.querySelector('.hamburger-btn');
-   
+
+   if (!popup || !trigger) return;
+
    if (!popup.contains(event.target) && !trigger.contains(event.target)) {
        popup.classList.remove('show');
    }
 });
 
 const messageInput = document.getElementById('messageInput');
-messageInput.addEventListener('input', function() {
-   this.style.height = 'auto';
-   this.style.height = this.scrollHeight + 'px';
-});
-
-messageInput.addEventListener('keypress', function(e) {
-   if (e.key === 'Enter' && e.ctrlKey) {
-       e.preventDefault();
-       sendMessage();
-   } else if (e.key === 'Enter' && !e.shiftKey) {
-       e.preventDefault();
-   }
-});
-
-window.onload = function() {
-   setTimeout(() => {
-       messageInput.focus();
-   }, 100);
-
-   initializeUiReadyState();
-   loadModelUiConfig(() => {
-       updateMode();
-       refreshIcons();
+if (messageInput) {
+   messageInput.addEventListener('input', function() {
+       this.style.height = 'auto';
+       this.style.height = this.scrollHeight + 'px';
    });
-   setTimeout(applyInitFallback, 1500);
-   setInterval(updateSelectedCell, 1000);
-   initializeDisplayMode();
-};
+
+   messageInput.addEventListener('keypress', function(e) {
+       if (e.key === 'Enter' && e.ctrlKey) {
+           e.preventDefault();
+           sendMessage();
+       } else if (e.key === 'Enter' && !e.shiftKey) {
+           e.preventDefault();
+       }
+   });
+}
+
+if (document.readyState === 'loading') {
+   document.addEventListener('DOMContentLoaded', bootRealUniverseApp, { once: true });
+} else {
+   bootRealUniverseApp();
+}
 </script>
 </body>
 </html>`;
