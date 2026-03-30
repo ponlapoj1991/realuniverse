@@ -245,8 +245,8 @@ function saveDynamicPreset(mode, presetId, presetName, promptText) {
   const name = sanitizePresetValue(presetName);
   const prompt = sanitizePresetValue(promptText);
 
-  if (!name) throw new Error('กรุณาระบุชื่อ Preset');
-  if (!prompt) throw new Error('กรุณาระบุ Prompt');
+  if (!name) throw new Error('Preset name is required');
+  if (!prompt) throw new Error('Prompt is required');
 
   const store = getPresetStore();
   const modePresets = store.presets[normalizedMode] || [];
@@ -1482,6 +1482,7 @@ function getRealUniverseHtmlContent() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RealUniverse AI</title>
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
 <style>
 * {
     margin: 0;
@@ -1650,50 +1651,62 @@ body {
 }
 
 /* Sidebar Mode - Keep Dialog Layout */
+.lucide {
+    width: 16px;
+    height: 16px;
+    stroke-width: 1.85;
+}
 .sidebar-mode .expanded-input-container {
     max-width: none;
     width: 100%;
 }
-.sidebar-mode .turbo-wrapper {
-    max-width: none;
+.sidebar-mode .quick-actions {
     width: 100%;
+    padding: 0 0 10px 0;
 }
 .sidebar-mode .quick-actions-buttons {
-    flex-direction: row;
-    justify-content: center;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
+    opacity: 1;
+    max-height: none;
+    margin-top: 8px;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
 }
 .sidebar-mode .quick-action-btn {
-    border-radius: 12px;
+    border-radius: 999px;
     text-align: center;
-    flex: none;
+    flex: 0 0 auto;
 }
-
 .sidebar-mode .in-box-controls {
-    flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
 }
-
 .sidebar-mode .status-text {
     font-size: 9px;
-    padding: 3px 6px;
+    padding: 5px 8px;
 }
-
 .sidebar-mode .turbo-toggle {
     font-size: 9px;
-    padding: 3px 6px;
+    padding: 5px 8px;
 }
-
-.sidebar-mode .hamburger-btn {
-    padding: 3px 6px;
-    font-size: 10px;
-}
-
+.sidebar-mode .hamburger-btn,
 .sidebar-mode .sendButton {
-    width: 28px;
-    height: 28px;
+    width: 34px;
+    height: 34px;
+}
+.sidebar-mode .settings-popup {
+    left: 0;
+    right: 0;
+    width: auto;
+    max-height: min(52vh, 420px);
+}
+.sidebar-mode .modal-overlay {
+    padding: 10px;
+}
+.sidebar-mode .preset-manager-modal {
+    width: 100%;
+    max-height: calc(100vh - 20px);
+    border-radius: 14px;
 }
 
 .custom-title-bar {
@@ -1705,31 +1718,38 @@ body {
     align-items: center;
     position: relative;
 }
+.brand-lockup {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+.brand-mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, rgba(131, 96, 195, 0.16), rgba(46, 191, 145, 0.12));
+    color: #7c5bd6;
+    flex-shrink: 0;
+}
+.brand-mark .lucide {
+    width: 17px;
+    height: 17px;
+}
 .app-title {
-    background: linear-gradient(45deg, #8360c3, #2ebf91, #8360c3);
+    background: linear-gradient(45deg, #6e57d2, #2ebf91);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
     font-family: 'Roboto', sans-serif;
     font-weight: 500;
     font-size: 20px;
-    letter-spacing: 0.3px;
+    letter-spacing: 0.2px;
     margin: 0;
-    padding-left: 40px;
-    position: relative;
-}
-
-.app-title::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 40px;
-    height: 40px;
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="none" stroke="%238360c3" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M14.826 5.376c2.8-1.995 5.087-2.882 5.883-2.085c.797.796-.09 3.083-2.085 5.884m-13.248 5.65c-1.995 2.8-2.882 5.088-2.085 5.884c.796.797 3.083-.09 5.884-2.085m9.45-9.45c-1.133 1.59-2.622 3.345-4.364 5.087s-3.497 3.231-5.086 4.363m9.45-9.45A7.2 7.2 0 0 1 19.2 12a7.2 7.2 0 0 1-10.025 6.624M17.09 6.91A7.2 7.2 0 1 0 6.91 17.09" color="%238360c3"/></svg>');
-    background-size: contain;
-    background-repeat: no-repeat;
+    min-width: 0;
 }
 
 .turbo-wrapper {
@@ -1771,8 +1791,8 @@ body {
 
 .send-button {
     background: white;
-    color: white;
-    border: 2px solid #e5e5e7;
+    color: #111827;
+    border: 1px solid #d1d5db;
     width: 32px;
     height: 32px;
     border-radius: 50%;
@@ -1782,20 +1802,15 @@ body {
     justify-content: center;
     font-size: 12px;
     flex-shrink: 0;
-    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
-    background-size: 26px 26px;
-    background-repeat: no-repeat;
-    background-position: center;
     transition: all 0.2s ease;
 }
 .send-button:hover {
     background-color: #f8f9fa;
-    border-color: #d1d5db;
+    border-color: #cbd5e1;
     transform: scale(1.05);
 }
 .send-button:disabled {
     background-color: #f5f5f5;
-    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
     border-color: #e5e5e7;
     cursor: not-allowed;
     opacity: 0.6;
@@ -1803,7 +1818,6 @@ body {
 .send-button:disabled.spinning {
     animation: spin 1s linear infinite !important;
     background-color: #f5f5f5 !important;
-    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg') !important;
     border-color: #e5e5e7 !important;
     cursor: not-allowed !important;
     opacity: 0.6 !important;
@@ -1844,8 +1858,8 @@ body {
     font-size: 12px;
     outline: none;
     resize: none;
-    max-height: 100px;
-    min-height: 24px;
+    max-height: 120px;
+    min-height: 28px;
     line-height: 1.4;
     font-family: inherit;
     color: #1d1d1f;
@@ -1864,64 +1878,70 @@ body {
    display: flex;
    align-items: center;
    gap: 8px;
-   margin-top: 14px;
-   padding: 4px 0 8px 0;
+   margin-top: 12px;
+   padding: 4px 0 0 0;
    position: relative;
+   width: 100%;
+   min-width: 0;
 }
 
 .hamburger-btn {
-    background: transparent;
+    background: #f8fafc;
     border: 1px solid #d1d5db;
     color: #86868b;
     cursor: pointer;
-    padding: 2px 4px;
-    border-radius: 4px;
-    font-size: 12px;
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: all 0.2s ease;
 }
 
 .hamburger-btn:hover {
-    background: rgba(255,255,255,0.5);
+    background: white;
     color: #1d1d1f;
+    border-color: #cbd5e1;
 }
 
 .status-text {
     font-size: 10px;
-    color: #86868b;
-    border: 1px solid #d1d5db;
-    padding: 4px 8px;
-    border-radius: 4px;
+    color: #64748b;
+    border: 1px solid #dbe2ea;
+    background: #f8fafc;
+    padding: 6px 10px;
+    border-radius: 999px;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .sendButton {
-    width: 40px;
-    height: 40px;
+    width: 38px;
+    height: 38px;
     border-radius: 50%;
-    border: 1px solid #E6E6FA;
-    background: white;
+    border: 1px solid #d1d5db;
+    background: #111827;
     color: white;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-left: 8px;
+    margin-left: auto;
     flex-shrink: 0;
-    align-self: flex-end;
-    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
-    background-size: 26px 26px;
-    background-repeat: no-repeat;
-    background-position: center;
     transition: all 0.2s ease;
 }
 
 .sendButton:hover {
-    background-color: white;
+    background-color: #1f2937;
     transform: scale(1.05);
 }
 
 .sendButton:disabled {
     background-color: #f5f5f5;
-    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
     border-color: #e5e5e7;
     cursor: not-allowed;
     opacity: 0.6;
@@ -1930,7 +1950,6 @@ body {
 .sendButton:disabled.spinning {
     animation: spin 1s linear infinite !important;
     background-color: #f5f5f5 !important;
-    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg') !important;
     border-color: #e5e5e7 !important;
     cursor: not-allowed !important;
     opacity: 0.6 !important;
@@ -1946,11 +1965,11 @@ body {
     bottom: calc(100% + 8px);
     left: 0;
     background: white;
-    border-radius: 12px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    border-radius: 16px;
+    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
     padding: 16px;
-    width: 320px;
-    max-height: 350px;
+    width: min(360px, calc(100vw - 32px));
+    max-height: min(52vh, 380px);
     overflow-y: auto;
     display: none;
     z-index: 1000;
@@ -1965,6 +1984,9 @@ body {
 }
 
 .popup-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 12px;
     font-weight: 600;
     color: #1d1d1f;
@@ -1985,10 +2007,10 @@ body {
 }
 
 .popup-option {
-    padding: 4px 8px;
+    padding: 6px 10px;
     background: #f8f9fa;
     border: 1px solid #e5e5e7;
-    border-radius: 6px;
+    border-radius: 999px;
     font-size: 10px;
     cursor: pointer;
     transition: all 0.2s ease;
@@ -2067,23 +2089,22 @@ body {
     border-bottom: 1px solid #eef0f3;
 }
 .preset-manager-title {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
     color: #1d1d1f;
 }
-.preset-manager-subtitle {
-    font-size: 11px;
-    color: #6b7280;
-    margin-top: 2px;
-}
 .modal-close-btn {
     border: none;
-    background: transparent;
+    background: #f8fafc;
     color: #6b7280;
     cursor: pointer;
-    font-size: 20px;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
     line-height: 1;
-    padding: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 .preset-manager-body {
     padding: 16px 18px 18px;
@@ -2165,13 +2186,13 @@ body {
 }
 
 .array-info {
-    background: #F0FFFF;
-    padding: 6px 8px;
+    background: transparent;
+    padding: 2px 4px 0;
     border-radius: 4px;
     font-size: 10px;
-    color: #0066cc;
-    border: 1px solid #F0FFFF;
-    margin-top: -4px;
+    color: #2563eb;
+    border: none;
+    margin-top: 2px;
 }
 .messages::-webkit-scrollbar {
     width: 4px;
@@ -2230,14 +2251,18 @@ body {
 
 /* Quick Actions Styles */
 .quick-actions {
-    padding: 8px 16px 12px 16px;
+    width: 100%;
+    padding: 0 0 12px 0;
     background: transparent;
 }
 .quick-actions-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-size: 11px;
-    color: #86868b;
+    color: #64748b;
     margin-bottom: 0;
-    text-align: center;
+    text-align: left;
     cursor: pointer;
     transition: color 0.2s ease;
 }
@@ -2252,60 +2277,64 @@ body {
 }
 .quick-actions-buttons {
     display: flex;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 8px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     opacity: 0;
     max-height: 0;
     overflow: hidden;
     transition: all 0.3s ease;
 }
 .quick-action-btn {
-    background: #1d1d1f;
-    border: 1px solid #1d1d1f;
-    border-radius: 16px;
-    padding: 3px 7px;
-    font-size: 7px;
-    color: white;
+    background: white;
+    border: 1px solid #dbe2ea;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 10px;
+    color: #1f2937;
     cursor: pointer;
     transition: all 0.2s ease;
     outline: none;
     font-family: inherit;
+    flex: 0 0 auto;
 }
 .quick-action-btn:hover {
-    background: #2d2d2f;
-    border-color: #2d2d2f;
+    background: #f8fafc;
+    border-color: #cbd5e1;
     transform: translateY(-1px);
 }
 .quick-action-btn:active {
     transform: translateY(0);
-    background: #0d0d0f;
+    background: #eef2f7;
 }
 </style>
 </head>
 <body>
 <div class="container" id="main-container">
     <div class="custom-title-bar">
-        <div class="app-title">Real Universe Agentic</div>
-        <button class="mode-switch-button" id="mode-switch-button" onclick="toggleDisplayMode()">
-            ▢▣
+        <div class="brand-lockup">
+            <div class="brand-mark"><i data-lucide="sparkles"></i></div>
+            <div class="app-title">Real Universe Agentic</div>
+        </div>
+        <button class="mode-switch-button" id="mode-switch-button" onclick="toggleDisplayMode()" aria-label="Toggle panel">
+            <i data-lucide="panel-right-open"></i>
         </button>
     </div>
     
     <div class="chat-container">
         <div class="messages" id="messages">
-            <div class="empty-state">Intelligent insights for your Google Sheets</div>
+            <div class="empty-state">Ready when you are</div>
         </div>
     </div>
 
     <div class="input-area">
         <!-- Quick Action Buttons -->
         <div class="quick-actions" id="quick-actions">
-            <div class="quick-actions-label">⚡️Quick Action</div>
+            <div class="quick-actions-label"><i data-lucide="zap"></i><span>Quick Actions</span></div>
             <div class="quick-actions-buttons">
-                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูล')">วิเคราะห์ข้อมูล</button>
-                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูลพร้อมสัดส่วน')">วิเคราะห์ข้อมูลพร้อมสัดส่วน</button>
-                <button class="quick-action-btn" onclick="sendQuickAction('ค้นหาประเด็นสำคัญ')">ค้นหาประเด็นสำคัญ</button>
+                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูล')">Analyze</button>
+                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูลพร้อมสัดส่วน')">Analyze + Ratio</button>
+                <button class="quick-action-btn" onclick="sendQuickAction('ค้นหาประเด็นสำคัญ')">Key Insights</button>
             </div>
         </div>
 
@@ -2315,30 +2344,30 @@ body {
                 <textarea
                     class="message-input"
                     id="messageInput"
-                    placeholder="Ask me anything.."
+                    placeholder="Ask anything"
                     rows="1"
                 ></textarea>
                 
                 <!-- Controls in input box -->
                 <div class="in-box-controls">
-                    <button class="hamburger-btn" onclick="toggleSettingsPopup()">👁</button>
-                    <span class="status-text" id="statusText">Answer • Loading... • Exact</span>
-                    <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()" style="display: none;">💡 Deep</button>
+                    <button class="hamburger-btn" onclick="toggleSettingsPopup()" aria-label="Settings"><i data-lucide="settings-2"></i></button>
+                    <span class="status-text" id="statusText">Answer • Loading • Exact</span>
+                    <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()" style="display: none;"><i data-lucide="lightbulb"></i><span>Deep</span></button>
                     
                     <!-- Settings Popup -->
                     <div class="settings-popup" id="settingsPopup">
                         <div class="popup-section">
-                            <div class="popup-title">🎯 Mode</div>
+                            <div class="popup-title"><i data-lucide="circle-dot"></i><span>Mode</span></div>
 <div class="popup-options">
     <div class="popup-option active" onclick="selectPopupMode('Answer', this, 'action')">Answer</div>
     <div class="popup-option" onclick="selectPopupMode('Array', this, 'array')">Array</div>
-    <div class="popup-option" onclick="selectPopupMode('Create Picture', this, 'image')">Create Picture</div>
+    <div class="popup-option" onclick="selectPopupMode('Image', this, 'image')">Image</div>
 </div>
                         </div>
                         
                         <div class="popup-section">
                             <div class="popup-title-row">
-                                <div class="popup-title">⚙️ Preset</div>
+                                <div class="popup-title"><i data-lucide="library-big"></i><span>Preset</span></div>
                                 <button class="preset-manage-btn" onclick="openPresetManager()">Manage</button>
                             </div>
                             <div class="popup-options" id="popupPresetOptions">
@@ -2349,7 +2378,7 @@ body {
                         </div>
                         
                         <div class="popup-section">
-                            <div class="popup-title">🎓 AI Creativity</div>
+                            <div class="popup-title"><i data-lucide="sliders-horizontal"></i><span>Tone</span></div>
                             <div class="popup-options">
                                 <div class="popup-option active" onclick="selectPopupTemp('Exact', this, 0)">Exact</div>
                                 <div class="popup-option" onclick="selectPopupTemp('Focused', this, 0.2)">Focused</div>
@@ -2358,53 +2387,49 @@ body {
                             </div>
                         </div>
                     </div>
+                    <button class="sendButton" id="sendButton" onclick="sendMessage()" aria-label="Send"><i data-lucide="send-horizontal"></i></button>
                 </div>
             </div>
-            
-            <button class="sendButton" id="sendButton" onclick="sendMessage()"></button>
         </div>
         
-        <div id="selected-cell" class="array-info">Selected: No data selected</div>
+        <div id="selected-cell" class="array-info">Selection · none</div>
     </div>
 </div>
 <div class="modal-overlay" id="presetManagerModal" onclick="handlePresetModalBackdrop(event)">
     <div class="preset-manager-modal">
         <div class="preset-manager-header">
-            <div>
-                <div class="preset-manager-title">Manage Presets</div>
-                <div class="preset-manager-subtitle">สร้าง แก้ไข และลบ Preset แยกตาม Mode</div>
-            </div>
-            <button class="modal-close-btn" onclick="closePresetManager()">×</button>
+            <div class="preset-manager-title">Preset Library</div>
+            <button class="modal-close-btn" onclick="closePresetManager()" aria-label="Close"><i data-lucide="x"></i></button>
         </div>
         <div class="preset-manager-body">
             <div class="popup-section">
-                <div class="popup-title">🎯 Mode</div>
+                <div class="popup-title"><i data-lucide="circle-dot"></i><span>Mode</span></div>
                 <div class="popup-options" id="presetManagerModeOptions">
                     <div class="popup-option active" data-mode="action" onclick="selectPresetManagerMode('action', this)">Answer</div>
                     <div class="popup-option" data-mode="array" onclick="selectPresetManagerMode('array', this)">Array</div>
-                    <div class="popup-option" data-mode="image" onclick="selectPresetManagerMode('image', this)">Create Picture</div>
+                    <div class="popup-option" data-mode="image" onclick="selectPresetManagerMode('image', this)">Image</div>
                 </div>
             </div>
 
             <div class="popup-section">
-                <div class="popup-title">รายการ Preset</div>
+                <div class="popup-title"><i data-lucide="library-big"></i><span>Presets</span></div>
                 <div class="preset-manager-list" id="presetManagerList"></div>
             </div>
 
             <div class="popup-section">
-                <div class="popup-title">Preset Name</div>
-                <input class="preset-input" id="presetNameInput" type="text" placeholder="เช่น วิเคราะห์ข้อมูล" />
+                <div class="popup-title"><i data-lucide="tag"></i><span>Name</span></div>
+                <input class="preset-input" id="presetNameInput" type="text" placeholder="e.g. General" />
             </div>
 
             <div class="popup-section">
-                <div class="popup-title">Prompt</div>
-                <textarea class="preset-textarea" id="presetPromptInput" placeholder="ระบุ prompt สำหรับ mode นี้"></textarea>
+                <div class="popup-title"><i data-lucide="file-text"></i><span>Prompt</span></div>
+                <textarea class="preset-textarea" id="presetPromptInput" placeholder="Write a system prompt"></textarea>
             </div>
 
             <div class="preset-manager-actions">
-                <button class="preset-secondary-btn" onclick="resetPresetForm()">New preset</button>
+                <button class="preset-secondary-btn" onclick="resetPresetForm()">New</button>
                 <button class="preset-secondary-btn danger" id="deletePresetButton" onclick="deletePresetFromModal()" style="display: none;">Delete</button>
-                <button class="preset-primary-btn" onclick="savePresetFromModal()">Save preset</button>
+                <button class="preset-primary-btn" onclick="savePresetFromModal()">Save</button>
             </div>
         </div>
     </div>
@@ -2423,6 +2448,16 @@ let editingPresetId = null;
 // Dynamic presets storage
 let dynamicPresets = null;
 
+function getIconMarkup(name) {
+   return '<i data-lucide="' + name + '"></i>';
+}
+
+function refreshIcons() {
+   if (window.lucide && typeof window.lucide.createIcons === 'function') {
+       window.lucide.createIcons();
+   }
+}
+
 function parseMarkdown(text) {
    return text.replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>');
 }
@@ -2439,14 +2474,16 @@ function copyToClipboard(text, button) {
        const plainText = tempDiv.textContent || tempDiv.innerText || '';
        
        navigator.clipboard.writeText(plainText).then(() => {
-           button.innerHTML = '☑';
+           button.innerHTML = getIconMarkup('check');
            button.classList.add('copied');
            button.setAttribute('data-tooltip', 'Copied!');
+           refreshIcons();
            
            setTimeout(() => {
-               button.innerHTML = '🗒';
+               button.innerHTML = getIconMarkup('copy');
                button.classList.remove('copied');
                button.setAttribute('data-tooltip', 'Copy');
+               refreshIcons();
            }, 2000);
        }).catch(() => {
            const textArea = document.createElement('textarea');
@@ -2458,21 +2495,23 @@ function copyToClipboard(text, button) {
            document.execCommand('copy');
            document.body.removeChild(textArea);
            
-           button.innerHTML = '☑';
+           button.innerHTML = getIconMarkup('check');
            button.classList.add('copied');
            button.setAttribute('data-tooltip', 'Copied!');
+           refreshIcons();
            
            setTimeout(() => {
-               button.innerHTML = '🗒';
+               button.innerHTML = getIconMarkup('copy');
                button.classList.remove('copied');
                button.setAttribute('data-tooltip', 'Copy');
+               refreshIcons();
            }, 2000);
        });
    } catch (error) {
        console.error('Copy failed:', error);
        button.setAttribute('data-tooltip', 'Copy failed');
        setTimeout(() => {
-           button.setAttribute('data-tooltip', 'Copy');
+       button.setAttribute('data-tooltip', 'Copy');
        }, 2000);
    }
 }
@@ -2554,10 +2593,12 @@ function loadDynamicPresets() {
            if (!hasAnyPresets(presets)) {
                openPresetManager(currentMode);
            }
+           refreshIcons();
        })
        .withFailureHandler(error => {
            console.error('Error loading presets:', error);
            showPopupPresetError(error.message || error.toString());
+           refreshIcons();
        })
        .getDynamicPresets();
 }
@@ -2570,7 +2611,7 @@ function updatePopupPresetsUI(presets) {
    
    if (presetEntries.length === 0) {
        currentPreset = null;
-       showPopupPresetError('ยังไม่มี Preset ในโหมดนี้');
+       showPopupPresetError('No presets in this mode');
        return;
    }
    
@@ -2607,6 +2648,7 @@ function showPopupPresetError(errorMessage) {
        </div>
    \`;
    updateStatusText();
+   refreshIcons();
 }
 
 function updateMode() {
@@ -2672,7 +2714,8 @@ function renderPresetManagerList() {
    const entries = getPresetEntriesByMode(presetManagerMode);
 
    if (entries.length === 0) {
-       list.innerHTML = '<div class="empty-preset-state">ยังไม่มี Preset ในโหมดนี้<br>สร้างรายการแรกได้จากฟอร์มด้านล่าง</div>';
+       list.innerHTML = '<div class="empty-preset-state">No presets yet<br>Create your first preset below</div>';
+       refreshIcons();
        return;
    }
 
@@ -2692,6 +2735,7 @@ function renderPresetManagerList() {
        item.onclick = () => selectPresetForEditing(entry.id);
        list.appendChild(item);
    });
+   refreshIcons();
 }
 
 function resetPresetForm() {
@@ -2728,7 +2772,7 @@ function savePresetFromModal() {
            selectPresetForEditing(result.selectedPresetId);
        })
        .withFailureHandler(error => {
-           alert('เกิดข้อผิดพลาด: ' + error.toString());
+           alert('Something went wrong: ' + error.toString());
        })
        .saveDynamicPreset(presetManagerMode, editingPresetId, presetName, prompt);
 }
@@ -2747,7 +2791,7 @@ function deletePresetFromModal() {
            renderPresetManagerList();
        })
        .withFailureHandler(error => {
-           alert('เกิดข้อผิดพลาด: ' + error.toString());
+           alert('Something went wrong: ' + error.toString());
        })
        .deleteDynamicPreset(presetManagerMode, editingPresetId);
 }
@@ -2755,7 +2799,7 @@ function deletePresetFromModal() {
 function updateSelectedCell() {
    google.script.run.withSuccessHandler(cellInfo => {
        const selectedCell = document.getElementById('selected-cell');
-       selectedCell.textContent = 'Data selected: ' + cellInfo;
+       selectedCell.textContent = 'Selection · ' + cellInfo;
    }).getRealUniverseSelectedCellInfo();
 }
 
@@ -2773,7 +2817,7 @@ function addMessage(text, sender, animate = false) {
    if (sender === 'bot') {
        const copyButton = document.createElement('button');
        copyButton.className = 'copy-button tooltip';
-       copyButton.innerHTML = '🗒';
+       copyButton.innerHTML = getIconMarkup('copy');
        copyButton.setAttribute('data-tooltip', 'Copy');
        copyButton.onclick = function() {
            copyToClipboard(content.innerHTML, this);
@@ -2788,7 +2832,7 @@ function addMessage(text, sender, animate = false) {
            if (!content.querySelector('.copy-button')) {
                const copyButton = document.createElement('button');
                copyButton.className = 'copy-button tooltip';
-               copyButton.innerHTML = '🗒';
+               copyButton.innerHTML = getIconMarkup('copy');
                copyButton.setAttribute('data-tooltip', 'Copy');
                copyButton.onclick = function() {
                    copyToClipboard(content.innerHTML, this);
@@ -2802,7 +2846,7 @@ function addMessage(text, sender, animate = false) {
        content.innerHTML = '';
        const copyButton = document.createElement('button');
        copyButton.className = 'copy-button tooltip';
-       copyButton.innerHTML = '🗒';
+       copyButton.innerHTML = getIconMarkup('copy');
        copyButton.setAttribute('data-tooltip', 'Copy');
        copyButton.onclick = function() {
            copyToClipboard(content.innerHTML, this);
@@ -2825,6 +2869,7 @@ function addMessage(text, sender, animate = false) {
            messageDiv.classList.add('typing-finished');
        }
    }
+   refreshIcons();
 }
 
 function typeWriterByWord(element, text) {
@@ -2926,7 +2971,7 @@ function sendMessage() {
    if (!question) return;
 
    if (!currentPreset) {
-       alert('ยังไม่มี Preset สำหรับโหมดนี้ กรุณาสร้างหรือเลือก Preset ก่อนใช้งาน');
+       alert('Create or select a preset first.');
        return;
    }
 
@@ -2960,7 +3005,7 @@ function sendMessage() {
            isTyping = false;
            updateSendButton();
            input.focus();
-           addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', true);
+           addMessage('Error: ' + error.toString(), 'bot', true);
        })
        .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode);
 }
@@ -3008,17 +3053,19 @@ function initializeDisplayMode() {
            
            if (mode === 'sidebar') {
                container.classList.add('sidebar-mode');
-               button.innerHTML = '▢▣';
+               button.innerHTML = getIconMarkup('panel-right-open');
            } else {
                container.classList.remove('sidebar-mode');
-               button.innerHTML = '▢▣';
+               button.innerHTML = getIconMarkup('panel-right-open');
            }
+           refreshIcons();
        })
        .withFailureHandler(() => {
            const container = document.getElementById('main-container');
            const button = document.getElementById('mode-switch-button');
            container.classList.remove('sidebar-mode');
-           button.innerHTML = '▢▣';
+           button.innerHTML = getIconMarkup('panel-right-open');
+           refreshIcons();
        })
        .getCurrentDisplayMode();
 }
@@ -3056,6 +3103,7 @@ window.onload = function() {
    updateMode();
    setInterval(updateSelectedCell, 1000);
    initializeDisplayMode();
+   refreshIcons();
 };
 </script>
 </body>
