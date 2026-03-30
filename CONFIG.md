@@ -1668,31 +1668,37 @@ body {
     opacity: 1;
     max-height: none;
     margin-top: 8px;
-    justify-content: flex-start;
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    justify-content: center;
+    flex-wrap: wrap;
+    overflow-x: visible;
     padding-bottom: 2px;
 }
 .sidebar-mode .quick-action-btn {
-    border-radius: 999px;
     text-align: center;
-    flex: 0 0 auto;
+    flex: none;
 }
 .sidebar-mode .in-box-controls {
     gap: 6px;
+    align-items: center;
 }
 .sidebar-mode .status-text {
+    height: 36px;
     font-size: 9px;
-    padding: 5px 8px;
+    padding: 0 12px;
+    border-radius: 12px;
 }
 .sidebar-mode .turbo-toggle {
+    height: 36px;
     font-size: 9px;
-    padding: 5px 8px;
+    padding: 0 12px;
+    border-radius: 12px;
+    flex: 0 0 auto;
 }
 .sidebar-mode .hamburger-btn,
 .sidebar-mode .sendButton {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
 }
 .sidebar-mode .settings-popup {
     left: 0;
@@ -1718,38 +1724,31 @@ body {
     align-items: center;
     position: relative;
 }
-.brand-lockup {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-}
-.brand-mark {
-    width: 28px;
-    height: 28px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(135deg, rgba(131, 96, 195, 0.16), rgba(46, 191, 145, 0.12));
-    color: #7c5bd6;
-    flex-shrink: 0;
-}
-.brand-mark .lucide {
-    width: 17px;
-    height: 17px;
-}
 .app-title {
-    background: linear-gradient(45deg, #6e57d2, #2ebf91);
+    background: linear-gradient(45deg, #8360c3, #2ebf91, #8360c3);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
     font-family: 'Roboto', sans-serif;
     font-weight: 500;
     font-size: 20px;
-    letter-spacing: 0.2px;
+    letter-spacing: 0.3px;
     margin: 0;
-    min-width: 0;
+    padding-left: 40px;
+    position: relative;
+}
+
+.app-title::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 40px;
+    height: 40px;
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="none" stroke="%238360c3" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M14.826 5.376c2.8-1.995 5.087-2.882 5.883-2.085c.797.796-.09 3.083-2.085 5.884m-13.248 5.65c-1.995 2.8-2.882 5.088-2.085 5.884c.796.797 3.083-.09 5.884-2.085m9.45-9.45c-1.133 1.59-2.622 3.345-4.364 5.087s-3.497 3.231-5.086 4.363m9.45-9.45A7.2 7.2 0 0 1 19.2 12a7.2 7.2 0 0 1-10.025 6.624M17.09 6.91A7.2 7.2 0 1 0 6.91 17.09" color="%238360c3"/></svg>');
+    background-size: contain;
+    background-repeat: no-repeat;
 }
 
 .turbo-wrapper {
@@ -1910,21 +1909,23 @@ body {
     color: #64748b;
     border: 1px solid #dbe2ea;
     background: #f8fafc;
-    padding: 6px 10px;
+    padding: 0 10px;
     border-radius: 999px;
     flex: 1 1 auto;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    display: inline-flex;
+    align-items: center;
 }
 
 .sendButton {
-    width: 38px;
-    height: 38px;
+    width: 34px;
+    height: 34px;
     border-radius: 50%;
-    border: 1px solid #d1d5db;
-    background: #111827;
+    border: 1px solid #E6E6FA;
+    background: white;
     color: white;
     cursor: pointer;
     display: flex;
@@ -1932,16 +1933,22 @@ body {
     justify-content: center;
     margin-left: auto;
     flex-shrink: 0;
+    align-self: center;
+    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
+    background-size: 22px 22px;
+    background-repeat: no-repeat;
+    background-position: center;
     transition: all 0.2s ease;
 }
 
 .sendButton:hover {
-    background-color: #1f2937;
+    background-color: white;
     transform: scale(1.05);
 }
 
 .sendButton:disabled {
     background-color: #f5f5f5;
+    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg');
     border-color: #e5e5e7;
     cursor: not-allowed;
     opacity: 0.6;
@@ -1950,6 +1957,7 @@ body {
 .sendButton:disabled.spinning {
     animation: spin 1s linear infinite !important;
     background-color: #f5f5f5 !important;
+    background-image: url('https://i.ibb.co/vvCrQ8DW/RS.jpg') !important;
     border-color: #e5e5e7 !important;
     cursor: not-allowed !important;
     opacity: 0.6 !important;
@@ -2256,13 +2264,10 @@ body {
     background: transparent;
 }
 .quick-actions-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
     font-size: 11px;
-    color: #64748b;
+    color: #86868b;
     margin-bottom: 0;
-    text-align: left;
+    text-align: center;
     cursor: pointer;
     transition: color 0.2s ease;
 }
@@ -2277,45 +2282,41 @@ body {
 }
 .quick-actions-buttons {
     display: flex;
-    justify-content: flex-start;
+    justify-content: center;
     gap: 8px;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     opacity: 0;
     max-height: 0;
     overflow: hidden;
     transition: all 0.3s ease;
 }
 .quick-action-btn {
-    background: white;
-    border: 1px solid #dbe2ea;
-    border-radius: 999px;
-    padding: 6px 10px;
-    font-size: 10px;
-    color: #1f2937;
+    background: #1d1d1f;
+    border: 1px solid #1d1d1f;
+    border-radius: 16px;
+    padding: 3px 7px;
+    font-size: 7px;
+    color: white;
     cursor: pointer;
     transition: all 0.2s ease;
     outline: none;
     font-family: inherit;
-    flex: 0 0 auto;
 }
 .quick-action-btn:hover {
-    background: #f8fafc;
-    border-color: #cbd5e1;
+    background: #2d2d2f;
+    border-color: #2d2d2f;
     transform: translateY(-1px);
 }
 .quick-action-btn:active {
     transform: translateY(0);
-    background: #eef2f7;
+    background: #0d0d0f;
 }
 </style>
 </head>
 <body>
 <div class="container" id="main-container">
     <div class="custom-title-bar">
-        <div class="brand-lockup">
-            <div class="brand-mark"><i data-lucide="sparkles"></i></div>
-            <div class="app-title">Real Universe Agentic</div>
-        </div>
+        <div class="app-title">Real Universe Agentic</div>
         <button class="mode-switch-button" id="mode-switch-button" onclick="toggleDisplayMode()" aria-label="Toggle panel">
             <i data-lucide="panel-right-open"></i>
         </button>
@@ -2323,18 +2324,18 @@ body {
     
     <div class="chat-container">
         <div class="messages" id="messages">
-            <div class="empty-state">Ready when you are</div>
+            <div class="empty-state">Intelligent insights for your Google Sheets</div>
         </div>
     </div>
 
     <div class="input-area">
         <!-- Quick Action Buttons -->
         <div class="quick-actions" id="quick-actions">
-            <div class="quick-actions-label"><i data-lucide="zap"></i><span>Quick Actions</span></div>
+            <div class="quick-actions-label">⚡️Quick Action</div>
             <div class="quick-actions-buttons">
-                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูล')">Analyze</button>
-                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูลพร้อมสัดส่วน')">Analyze + Ratio</button>
-                <button class="quick-action-btn" onclick="sendQuickAction('ค้นหาประเด็นสำคัญ')">Key Insights</button>
+                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูล')">วิเคราะห์ข้อมูล</button>
+                <button class="quick-action-btn" onclick="sendQuickAction('วิเคราะห์ข้อมูลพร้อมสัดส่วน')">วิเคราะห์ข้อมูลพร้อมสัดส่วน</button>
+                <button class="quick-action-btn" onclick="sendQuickAction('ค้นหาประเด็นสำคัญ')">ค้นหาประเด็นสำคัญ</button>
             </div>
         </div>
 
@@ -2344,14 +2345,14 @@ body {
                 <textarea
                     class="message-input"
                     id="messageInput"
-                    placeholder="Ask anything"
+                    placeholder="Ask me anything.."
                     rows="1"
                 ></textarea>
                 
                 <!-- Controls in input box -->
                 <div class="in-box-controls">
                     <button class="hamburger-btn" onclick="toggleSettingsPopup()" aria-label="Settings"><i data-lucide="settings-2"></i></button>
-                    <span class="status-text" id="statusText">Answer • Loading • Exact</span>
+                    <span class="status-text" id="statusText">Answer • Loading... • Exact</span>
                     <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()" style="display: none;"><i data-lucide="lightbulb"></i><span>Deep</span></button>
                     
                     <!-- Settings Popup -->
@@ -2387,12 +2388,12 @@ body {
                             </div>
                         </div>
                     </div>
-                    <button class="sendButton" id="sendButton" onclick="sendMessage()" aria-label="Send"><i data-lucide="send-horizontal"></i></button>
+                    <button class="sendButton" id="sendButton" onclick="sendMessage()" aria-label="Send"></button>
                 </div>
             </div>
         </div>
         
-        <div id="selected-cell" class="array-info">Selection · none</div>
+        <div id="selected-cell" class="array-info">Data selected: No data selected</div>
     </div>
 </div>
 <div class="modal-overlay" id="presetManagerModal" onclick="handlePresetModalBackdrop(event)">
@@ -2772,7 +2773,7 @@ function savePresetFromModal() {
            selectPresetForEditing(result.selectedPresetId);
        })
        .withFailureHandler(error => {
-           alert('Something went wrong: ' + error.toString());
+           alert('เกิดข้อผิดพลาด: ' + error.toString());
        })
        .saveDynamicPreset(presetManagerMode, editingPresetId, presetName, prompt);
 }
@@ -2791,7 +2792,7 @@ function deletePresetFromModal() {
            renderPresetManagerList();
        })
        .withFailureHandler(error => {
-           alert('Something went wrong: ' + error.toString());
+           alert('เกิดข้อผิดพลาด: ' + error.toString());
        })
        .deleteDynamicPreset(presetManagerMode, editingPresetId);
 }
@@ -2799,7 +2800,7 @@ function deletePresetFromModal() {
 function updateSelectedCell() {
    google.script.run.withSuccessHandler(cellInfo => {
        const selectedCell = document.getElementById('selected-cell');
-       selectedCell.textContent = 'Selection · ' + cellInfo;
+       selectedCell.textContent = 'Data selected: ' + cellInfo;
    }).getRealUniverseSelectedCellInfo();
 }
 
@@ -2971,7 +2972,7 @@ function sendMessage() {
    if (!question) return;
 
    if (!currentPreset) {
-       alert('Create or select a preset first.');
+       alert('ยังไม่มี Preset สำหรับโหมดนี้ กรุณาสร้างหรือเลือก Preset ก่อนใช้งาน');
        return;
    }
 
@@ -3005,7 +3006,7 @@ function sendMessage() {
            isTyping = false;
            updateSendButton();
            input.focus();
-           addMessage('Error: ' + error.toString(), 'bot', true);
+           addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', true);
        })
        .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode);
 }
