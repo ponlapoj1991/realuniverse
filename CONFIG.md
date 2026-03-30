@@ -16,6 +16,30 @@ const MODEL_CONFIG = {
   image: { model: 'dall-e-3', size: '1024x1024', quality: 'hd', n: 1 }
 };
 
+const AGENT_MODEL_CONFIG = {
+  model: 'gpt-5.4',
+  reasoning: 'xhigh',
+  planningMaxTokens: 4000,
+  executionMaxTokens: 2500,
+  batchSize: 20,
+  maxSampleRows: 5
+};
+
+const AGENT_MODE_SYSTEM_PROMPT = [
+  'You are RealUniverse Agent operating inside Google Sheets.',
+  'You always know you are working on the user\'s currently active sheet.',
+  'You can inspect the sheet, resolve columns by letter or header, insert a column, and write results back into the sheet.',
+  'Plan only with the supported actions below:',
+  '- insert_column: insert a new column at a position and set its header',
+  '- analyze_fill: read a source column row-by-row and write one result per row to a target column',
+  'If the user only asks a question, answer directly with no actions.',
+  'Return a JSON object with keys: summary, finalResponse, actions.',
+  'Each action must be minimal, deterministic, and safe.',
+  'Never invent columns that do not exist. If a target column must be created, add an insert_column action first.',
+  'For analyze_fill, include sourceColumn, targetColumn, instruction, and optional headerName if helpful.',
+  'Do not include markdown code fences.'
+].join('\n');
+
 const MODEL_REGISTRY = {
   'gpt-4.1': {
     label: 'GPT-4.1',
@@ -657,6 +681,444 @@ function getRealUniverseModelUiConfig() {
   };
 }
 
+function parseJsonResponseText(rawText) {
+  let cleanedText = String(rawText || '').trim();
+  if (cleanedText.startsWith('```json')) {
+    cleanedText = cleanedText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+  } else if (cleanedText.startsWith('```')) {
+    cleanedText = cleanedText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+  return JSON.parse(cleanedText);
+}
+
+function getColumnLetter(columnNumber) {
+  let temp = Number(columnNumber);
+  let letter = '';
+  while (temp > 0) {
+    const remainder = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + remainder) + letter;
+    temp = Math.floor((temp - remainder - 1) / 26);
+  }
+  return letter || '';
+}
+
+function getActiveSheetSchema() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  const headerValues = sheet.getRange(1, 1, 1, lastColumn).getDisplayValues()[0] || [];
+
+  const columns = [];
+  for (let columnIndex = 1; columnIndex <= lastColumn; columnIndex++) {
+    const letter = getColumnLetter(columnIndex);
+    const headerValue = cleanCellData(headerValues[columnIndex - 1] || '');
+    columns.push({
+      index: columnIndex,
+      letter: letter,
+      header: headerValue,
+      label: headerValue || letter
+    });
+  }
+
+  return {
+    spreadsheetId: SpreadsheetApp.getActiveSpreadsheet().getId(),
+    spreadsheetName: SpreadsheetApp.getActiveSpreadsheet().getName(),
+    sheetId: sheet.getSheetId(),
+    sheetName: sheet.getName(),
+    lastRow: lastRow,
+    lastColumn: lastColumn,
+    rowCount: Math.max(lastRow - 1, 0),
+    columnCount: lastColumn,
+    columns: columns
+  };
+}
+
+function getSheetSampleRows(limit) {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const schema = getActiveSheetSchema();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || AGENT_MODEL_CONFIG.maxSampleRows, AGENT_MODEL_CONFIG.maxSampleRows));
+  const rows = [];
+
+  if (schema.lastRow <= 1 || schema.lastColumn <= 0) {
+    return rows;
+  }
+
+  const readCount = Math.min(safeLimit, schema.lastRow - 1);
+  const values = sheet.getRange(2, 1, readCount, schema.lastColumn).getDisplayValues();
+
+  values.forEach((rowValues, rowIndex) => {
+    rows.push({
+      rowNumber: rowIndex + 2,
+      values: rowValues.map(value => cleanCellData(value))
+    });
+  });
+
+  return rows;
+}
+
+function getActiveSheetContext() {
+  const schema = getActiveSheetSchema();
+  return {
+    ...schema,
+    sampleRows: getSheetSampleRows(AGENT_MODEL_CONFIG.maxSampleRows)
+  };
+}
+
+function resolveColumnReference(input) {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const schema = getActiveSheetSchema();
+  const normalizedInput = cleanCellData(input || '').toLowerCase();
+
+  if (!normalizedInput) {
+    throw new Error('Column reference is required');
+  }
+
+  const numericColumn = convertToColumnNumber(normalizedInput);
+  if (numericColumn && numericColumn >= 1 && numericColumn <= sheet.getMaxColumns()) {
+    const matchedByLetter = schema.columns.find(column => column.index === numericColumn);
+    return matchedByLetter || {
+      index: numericColumn,
+      letter: getColumnLetter(numericColumn),
+      header: '',
+      label: getColumnLetter(numericColumn)
+    };
+  }
+
+  const matchedByHeader = schema.columns.find(column => cleanCellData(column.header || '').toLowerCase() === normalizedInput);
+  if (matchedByHeader) return matchedByHeader;
+
+  throw new Error('Column not found: ' + input);
+}
+
+function insertColumnAt(position, headerName) {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const targetIndex = convertToColumnNumber(position);
+  if (!targetIndex) {
+    throw new Error('Invalid insert position: ' + position);
+  }
+
+  sheet.insertColumnBefore(targetIndex);
+  if (headerName && String(headerName).trim()) {
+    sheet.getRange(1, targetIndex).setValue(String(headerName).trim());
+  }
+
+  return {
+    columnIndex: targetIndex,
+    columnLetter: getColumnLetter(targetIndex),
+    headerName: String(headerName || '').trim()
+  };
+}
+
+function writeColumnValues(columnRef, startRow, values) {
+  const resolvedColumn = resolveColumnReference(columnRef);
+  const safeValues = Array.isArray(values) ? values : [];
+  if (safeValues.length === 0) {
+    return {
+      columnIndex: resolvedColumn.index,
+      columnLetter: resolvedColumn.letter,
+      rowsWritten: 0
+    };
+  }
+
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const normalizedValues = safeValues.map(value => [value == null ? '' : value]);
+  sheet.getRange(startRow, resolvedColumn.index, normalizedValues.length, 1).setValues(normalizedValues);
+
+  return {
+    columnIndex: resolvedColumn.index,
+    columnLetter: resolvedColumn.letter,
+    rowsWritten: normalizedValues.length,
+    startRow: startRow,
+    endRow: startRow + normalizedValues.length - 1
+  };
+}
+
+function getRealUniverseAgentStatusInfo() {
+  try {
+    const context = getActiveSheetContext();
+    return 'Active sheet: ' + context.sheetName + ' (' + context.rowCount + ' rows, ' + context.columnCount + ' cols)';
+  } catch (e) {
+    return '(Error reading active sheet)';
+  }
+}
+
+function buildAgentPlanningPrompt(userPrompt, agentState) {
+  const context = agentState.context || getActiveSheetContext();
+  const summary = agentState.memorySummary || '';
+
+  return JSON.stringify({
+    userPrompt: userPrompt,
+    activeSheet: {
+      spreadsheetName: context.spreadsheetName,
+      sheetName: context.sheetName,
+      rowCount: context.rowCount,
+      columnCount: context.columnCount,
+      columns: context.columns.map(column => ({
+        letter: column.letter,
+        header: column.header || '',
+        label: column.label
+      })),
+      sampleRows: context.sampleRows
+    },
+    memorySummary: summary
+  }, null, 2);
+}
+
+function buildAgentPlan(userPrompt, agentState) {
+  const payload = {
+    model: AGENT_MODEL_CONFIG.model,
+    messages: [
+      { role: 'system', content: AGENT_MODE_SYSTEM_PROMPT },
+      { role: 'user', content: buildAgentPlanningPrompt(userPrompt, agentState) }
+    ],
+    max_tokens: AGENT_MODEL_CONFIG.planningMaxTokens,
+    response_format: { type: 'json_object' },
+    reasoning: { effort: AGENT_MODEL_CONFIG.reasoning }
+  };
+
+  const rawResult = makeRealUniverseApiCall(payload);
+  const parsed = parseJsonResponseText(rawResult);
+  const safeActions = Array.isArray(parsed.actions) ? parsed.actions : [];
+
+  return {
+    summary: cleanCellData(parsed.summary || 'Plan ready'),
+    finalResponse: cleanCellData(parsed.finalResponse || ''),
+    actions: safeActions
+      .filter(action => action && ['insert_column', 'analyze_fill'].includes(action.type))
+      .map(action => ({
+        type: action.type,
+        position: cleanCellData(action.position || ''),
+        headerName: cleanCellData(action.headerName || action.header || ''),
+        sourceColumn: cleanCellData(action.sourceColumn || ''),
+        targetColumn: cleanCellData(action.targetColumn || ''),
+        instruction: cleanCellData(action.instruction || '')
+      }))
+  };
+}
+
+function analyzeAgentBatchValues(action, batchValues) {
+  const payload = {
+    model: AGENT_MODEL_CONFIG.model,
+    messages: [
+      {
+        role: 'system',
+        content: 'You analyze spreadsheet rows and return one output per input row. Return a JSON object with a "results" array of exactly the same length as the input rows. Keep outputs concise. For blank input, return an empty string.'
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          instruction: action.instruction,
+          sourceColumn: action.sourceColumn,
+          rows: batchValues
+        }, null, 2)
+      }
+    ],
+    max_tokens: AGENT_MODEL_CONFIG.executionMaxTokens,
+    response_format: { type: 'json_object' },
+    reasoning: { effort: AGENT_MODEL_CONFIG.reasoning }
+  };
+
+  const rawResult = makeRealUniverseApiCall(payload);
+  const parsed = parseJsonResponseText(rawResult);
+  const safeResults = Array.isArray(parsed.results) ? parsed.results : [];
+
+  return batchValues.map((row, index) => {
+    if (!row.text) return '';
+    return cleanCellData(safeResults[index] || '');
+  });
+}
+
+function advanceAgentState(agentState, nextFields) {
+  return {
+    ...agentState,
+    ...nextFields
+  };
+}
+
+function processRealUniverseAgentStep(agentState) {
+  const state = agentState || {};
+  const phase = state.phase || 'bootstrap';
+
+  if (phase === 'bootstrap') {
+    const context = getActiveSheetContext();
+    return {
+      done: false,
+      events: [
+        { type: 'status', label: 'Reading active sheet' },
+        { type: 'status', label: 'Detected ' + context.columnCount + ' columns in ' + context.sheetName }
+      ],
+      nextState: {
+        phase: 'plan',
+        userPrompt: state.userPrompt || '',
+        memorySummary: state.memorySummary || '',
+        context: context,
+        executionLog: []
+      }
+    };
+  }
+
+  if (phase === 'plan') {
+    const plan = buildAgentPlan(state.userPrompt || '', state);
+    const events = [
+      { type: 'status', label: 'Planning next steps' },
+      { type: 'status', label: plan.summary || 'Plan ready' }
+    ];
+
+    if (!plan.actions.length) {
+      return {
+        done: true,
+        events: events,
+        finalMessage: plan.finalResponse || plan.summary || 'Done.',
+        nextState: null
+      };
+    }
+
+    return {
+      done: false,
+      events: events,
+      nextState: {
+        ...state,
+        phase: 'execute',
+        plan: plan,
+        currentActionIndex: 0,
+        currentBatchIndex: 0,
+        actionRuntime: null,
+        executionLog: state.executionLog || []
+      }
+    };
+  }
+
+  if (phase === 'execute') {
+    const plan = state.plan || { actions: [] };
+    const action = plan.actions[state.currentActionIndex];
+
+    if (!action) {
+      const executionLog = Array.isArray(state.executionLog) ? state.executionLog : [];
+      const finalParts = [];
+      if (plan.finalResponse) finalParts.push(plan.finalResponse);
+      if (executionLog.length > 0) finalParts.push(executionLog.join('\n'));
+
+      return {
+        done: true,
+        events: [{ type: 'status', label: 'Agent run complete' }],
+        finalMessage: finalParts.join('\n\n').trim() || 'Done.',
+        nextState: null
+      };
+    }
+
+    if (action.type === 'insert_column') {
+      const result = insertColumnAt(action.position, action.headerName);
+      const updatedContext = getActiveSheetContext();
+      const executionLog = (state.executionLog || []).concat(
+        'Inserted column ' + result.columnLetter + ' with header "' + (result.headerName || result.columnLetter) + '".'
+      );
+
+      return {
+        done: false,
+        events: [
+          { type: 'tool_call', label: 'Inserting column ' + result.columnLetter },
+          { type: 'tool_result', label: 'Created header "' + (result.headerName || result.columnLetter) + '"' }
+        ],
+        nextState: advanceAgentState(state, {
+          context: updatedContext,
+          currentActionIndex: state.currentActionIndex + 1,
+          currentBatchIndex: 0,
+          actionRuntime: null,
+          executionLog: executionLog
+        })
+      };
+    }
+
+    if (action.type === 'analyze_fill') {
+      let runtime = state.actionRuntime;
+      if (!runtime) {
+        const sourceColumn = resolveColumnReference(action.sourceColumn);
+        const targetColumn = resolveColumnReference(action.targetColumn);
+        const lastRow = SpreadsheetApp.getActiveSheet().getLastRow();
+        const totalRows = Math.max(lastRow - 1, 0);
+        const totalBatches = totalRows === 0 ? 0 : Math.ceil(totalRows / AGENT_MODEL_CONFIG.batchSize);
+
+        runtime = {
+          sourceColumn: sourceColumn,
+          targetColumn: targetColumn,
+          totalRows: totalRows,
+          totalBatches: totalBatches
+        };
+      }
+
+      if (runtime.totalRows === 0) {
+        return {
+          done: false,
+          events: [{ type: 'status', label: 'No data rows found in the active sheet' }],
+          nextState: advanceAgentState(state, {
+            currentActionIndex: state.currentActionIndex + 1,
+            currentBatchIndex: 0,
+            actionRuntime: null
+          })
+        };
+      }
+
+      const batchIndex = state.currentBatchIndex || 0;
+      const startRow = 2 + (batchIndex * AGENT_MODEL_CONFIG.batchSize);
+      const remainingRows = runtime.totalRows - (batchIndex * AGENT_MODEL_CONFIG.batchSize);
+      const batchRowCount = Math.min(AGENT_MODEL_CONFIG.batchSize, remainingRows);
+      const sheet = SpreadsheetApp.getActiveSheet();
+      const batchValues = sheet
+        .getRange(startRow, runtime.sourceColumn.index, batchRowCount, 1)
+        .getDisplayValues()
+        .map((row, index) => ({
+          rowNumber: startRow + index,
+          text: cleanCellData(row[0] || '')
+        }));
+
+      const analyzedValues = analyzeAgentBatchValues(action, batchValues);
+      const writeResult = writeColumnValues(runtime.targetColumn.letter, startRow, analyzedValues);
+      SpreadsheetApp.flush();
+
+      const nextBatchIndex = batchIndex + 1;
+      const executionLog = state.executionLog || [];
+      if (nextBatchIndex >= runtime.totalBatches) {
+        const completedLog = executionLog.concat(
+          'Wrote ' + runtime.totalRows + ' results into column ' + runtime.targetColumn.letter + '.'
+        );
+
+        return {
+          done: false,
+          events: [
+            { type: 'tool_call', label: 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter },
+            { type: 'tool_result', label: 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow }
+          ],
+          nextState: advanceAgentState(state, {
+            currentActionIndex: state.currentActionIndex + 1,
+            currentBatchIndex: 0,
+            actionRuntime: null,
+            executionLog: completedLog
+          })
+        };
+      }
+
+      return {
+        done: false,
+        events: [
+          { type: 'tool_call', label: 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter },
+          { type: 'tool_result', label: 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow }
+        ],
+        nextState: advanceAgentState(state, {
+          currentBatchIndex: nextBatchIndex,
+          actionRuntime: runtime
+        })
+      };
+    }
+  }
+
+  return {
+    done: true,
+    events: [{ type: 'error', label: 'Unsupported agent state' }],
+    finalMessage: 'Agent could not continue this task.',
+    nextState: null
+  };
+}
+
 function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false, selectedModel = null, reasoningEffort = null) {
   try {
     if (mode === 'action') {
@@ -667,6 +1129,8 @@ function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature =
       }
     } else if (mode === 'array') {
       return processRealUniverseArray(prompt, preset, temperature, selectedModel, reasoningEffort);
+    } else if (mode === 'agent') {
+      return 'Agent mode uses the live agent loop.';
     } else if (mode === 'image') {
       return processRealUniverseImage(prompt, preset, temperature);
     }
@@ -1690,6 +2154,13 @@ function getRealUniverseSelectedCellInfo() {
   }
 }
 
+function getRealUniverseFooterContext(mode) {
+  if (mode === 'agent') {
+    return getRealUniverseAgentStatusInfo();
+  }
+  return getRealUniverseSelectedCellInfo();
+}
+
 function getRealUniverseHtmlContent() {
   return '<div style="font-family:Arial;padding:8px;">RealUniverse AI is ready.</div>';
 }
@@ -1797,6 +2268,15 @@ body {
     background: #F0FFFF;
     color: #1d1d1f;
     border-bottom-left-radius: 4px;
+}
+.message.agent-event .message-content {
+    background: rgba(255, 255, 255, 0.72);
+    color: #64748b;
+    border: 1px dashed #d6dde6;
+    border-radius: 12px;
+    padding: 7px 10px;
+    font-size: 10px;
+    line-height: 1.4;
 }
 .message-content strong {
     font-weight: 600;
@@ -2632,14 +3112,15 @@ body {
 <div class="popup-options" id="popupModeOptions">
     <div class="popup-option active" onclick="selectPopupMode('Answer', this, 'action')">Answer</div>
     <div class="popup-option" onclick="selectPopupMode('Array', this, 'array')">Array</div>
+    <div class="popup-option" onclick="selectPopupMode('Agent', this, 'agent')">Agent</div>
     <div class="popup-option" onclick="selectPopupMode('Image', this, 'image')">Image</div>
 </div>
-                        </div>
-                        
-	                        <div class="popup-section">
-	                            <div class="popup-title-row">
-	                                <div class="popup-title"><i data-lucide="library-big"></i><span>Preset</span></div>
-	                                <button class="preset-manage-btn" onclick="openPresetManager()">Manage</button>
+</div>
+
+		                        <div class="popup-section" id="popupPresetSection">
+		                            <div class="popup-title-row">
+		                                <div class="popup-title"><i data-lucide="library-big"></i><span>Preset</span></div>
+		                                <button class="preset-manage-btn" onclick="openPresetManager()">Manage</button>
 	                            </div>
                             <div class="popup-options" id="popupPresetOptions">
                                 <div style="padding: 12px; text-align: center; font-size: 10px; color: #86868b;">
@@ -2744,6 +3225,272 @@ let currentReasoningSelections = {
    action: null,
    array: null
 };
+let activeAgentThreadId = null;
+let currentAgentState = null;
+
+const AGENT_DB_NAME = 'realuniverse-agent-v1';
+const AGENT_DB_VERSION = 1;
+const AGENT_MAX_RECENT_TURNS = 20;
+const AGENT_MAX_RECENT_EVENTS = 120;
+const AGENT_MAX_SUMMARY_LENGTH = 4000;
+
+function openAgentDb() {
+   return new Promise((resolve, reject) => {
+       const request = indexedDB.open(AGENT_DB_NAME, AGENT_DB_VERSION);
+
+       request.onupgradeneeded = event => {
+           const db = event.target.result;
+
+           if (!db.objectStoreNames.contains('agent_threads')) {
+               const threadStore = db.createObjectStore('agent_threads', { keyPath: 'id' });
+               threadStore.createIndex('sheetKey', 'sheetKey', { unique: false });
+               threadStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+           }
+
+           if (!db.objectStoreNames.contains('agent_turns')) {
+               const turnStore = db.createObjectStore('agent_turns', { keyPath: 'id' });
+               turnStore.createIndex('threadId', 'threadId', { unique: false });
+               turnStore.createIndex('createdAt', 'createdAt', { unique: false });
+           }
+
+           if (!db.objectStoreNames.contains('agent_events')) {
+               const eventStore = db.createObjectStore('agent_events', { keyPath: 'id' });
+               eventStore.createIndex('threadId', 'threadId', { unique: false });
+               eventStore.createIndex('createdAt', 'createdAt', { unique: false });
+           }
+
+           if (!db.objectStoreNames.contains('agent_memory')) {
+               const memoryStore = db.createObjectStore('agent_memory', { keyPath: 'id' });
+               memoryStore.createIndex('threadId', 'threadId', { unique: false });
+               memoryStore.createIndex('memoryKey', 'memoryKey', { unique: false });
+           }
+       };
+
+       request.onsuccess = () => resolve(request.result);
+       request.onerror = () => reject(request.error);
+   });
+}
+
+function idbRequestToPromise(request) {
+   return new Promise((resolve, reject) => {
+       request.onsuccess = () => resolve(request.result);
+       request.onerror = () => reject(request.error);
+   });
+}
+
+async function runInAgentTransaction(storeNames, mode, handler) {
+   const db = await openAgentDb();
+   return new Promise((resolve, reject) => {
+       const transaction = db.transaction(storeNames, mode);
+       const stores = {};
+       storeNames.forEach(storeName => {
+           stores[storeName] = transaction.objectStore(storeName);
+       });
+
+       let handlerResult = null;
+       Promise.resolve(handler(stores, transaction))
+           .then(result => {
+               handlerResult = result;
+           })
+           .catch(error => {
+               reject(error);
+               try {
+                   transaction.abort();
+               } catch (abortError) {
+                   console.error('Abort transaction failed:', abortError);
+               }
+           });
+
+       transaction.oncomplete = () => resolve(handlerResult);
+       transaction.onerror = () => reject(transaction.error);
+       transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+   });
+}
+
+function createAgentRecordId(prefix) {
+   return prefix + '_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+}
+
+function buildAgentSheetKey(context) {
+   return context.spreadsheetId + ':' + context.sheetId;
+}
+
+async function getAgentThread(threadId) {
+   return runInAgentTransaction(['agent_threads'], 'readonly', stores => {
+       return idbRequestToPromise(stores.agent_threads.get(threadId));
+   });
+}
+
+async function saveAgentThread(thread) {
+   return runInAgentTransaction(['agent_threads'], 'readwrite', stores => {
+       stores.agent_threads.put(thread);
+   });
+}
+
+async function ensureAgentThread(context) {
+   const threadId = buildAgentSheetKey(context);
+   const existingThread = await getAgentThread(threadId);
+   const now = Date.now();
+
+   const nextThread = {
+       id: threadId,
+       sheetKey: buildAgentSheetKey(context),
+       spreadsheetId: context.spreadsheetId,
+       spreadsheetName: context.spreadsheetName,
+       sheetId: context.sheetId,
+       sheetName: context.sheetName,
+       title: 'Agent · ' + context.sheetName,
+       status: 'active',
+       currentTurn: existingThread ? (existingThread.currentTurn || 0) : 0,
+       createdAt: existingThread ? existingThread.createdAt : now,
+       updatedAt: now
+   };
+
+   await saveAgentThread(nextThread);
+   activeAgentThreadId = threadId;
+   return nextThread;
+}
+
+async function getAgentTurns(threadId) {
+   return runInAgentTransaction(['agent_turns'], 'readonly', async stores => {
+       const allTurns = await idbRequestToPromise(stores.agent_turns.getAll());
+       return allTurns
+           .filter(turn => turn.threadId === threadId)
+           .sort((a, b) => a.createdAt - b.createdAt);
+   });
+}
+
+async function getAgentEvents(threadId) {
+   return runInAgentTransaction(['agent_events'], 'readonly', async stores => {
+       const allEvents = await idbRequestToPromise(stores.agent_events.getAll());
+       return allEvents
+           .filter(event => event.threadId === threadId)
+           .sort((a, b) => a.createdAt - b.createdAt);
+   });
+}
+
+async function saveAgentTurn(threadId, role, phase, content, extra = {}) {
+   const thread = await getAgentThread(threadId);
+   const nextTurnNo = ((thread && thread.currentTurn) || 0) + 1;
+   const now = Date.now();
+
+   await runInAgentTransaction(['agent_turns', 'agent_threads'], 'readwrite', stores => {
+       stores.agent_turns.put({
+           id: createAgentRecordId('turn'),
+           threadId: threadId,
+           turnNo: nextTurnNo,
+           role: role,
+           phase: phase,
+           content: content,
+           createdAt: now,
+           ...extra
+       });
+
+       stores.agent_threads.put({
+           ...(thread || { id: threadId, createdAt: now }),
+           ...(thread || {}),
+           id: threadId,
+           currentTurn: nextTurnNo,
+           updatedAt: now,
+           status: 'active'
+       });
+   });
+}
+
+async function saveAgentEvents(threadId, events) {
+   if (!Array.isArray(events) || events.length === 0) return;
+
+   await runInAgentTransaction(['agent_events'], 'readwrite', stores => {
+       events.forEach(event => {
+           stores.agent_events.put({
+               id: createAgentRecordId('event'),
+               threadId: threadId,
+               createdAt: Date.now(),
+               ...event
+           });
+       });
+   });
+}
+
+async function upsertAgentMemory(threadId, memoryKey, value) {
+   const record = {
+       id: threadId + ':' + memoryKey,
+       threadId: threadId,
+       memoryKey: memoryKey,
+       value: value,
+       updatedAt: Date.now()
+   };
+
+   await runInAgentTransaction(['agent_memory'], 'readwrite', stores => {
+       stores.agent_memory.put(record);
+   });
+}
+
+async function getAgentMemory(threadId, memoryKey) {
+   return runInAgentTransaction(['agent_memory'], 'readonly', stores => {
+       return idbRequestToPromise(stores.agent_memory.get(threadId + ':' + memoryKey));
+   });
+}
+
+async function compactAgentThread(threadId) {
+   const turns = await getAgentTurns(threadId);
+   if (turns.length <= AGENT_MAX_RECENT_TURNS) {
+       return;
+   }
+
+   const turnsToSummarize = turns.slice(0, turns.length - AGENT_MAX_RECENT_TURNS);
+   const recentTurns = turns.slice(turns.length - AGENT_MAX_RECENT_TURNS);
+   const existingMemory = await getAgentMemory(threadId, 'rolling_summary');
+   const priorSummary = existingMemory && existingMemory.value ? String(existingMemory.value) : '';
+   const summaryLines = turnsToSummarize.map(turn => {
+       const roleLabel = String(turn.role || '').toUpperCase();
+       return roleLabel + ' · ' + String(turn.content || '').slice(0, 180);
+   });
+   const mergedSummary = (priorSummary + '\n' + summaryLines.join('\n')).trim().slice(-AGENT_MAX_SUMMARY_LENGTH);
+
+   await runInAgentTransaction(['agent_turns', 'agent_memory'], 'readwrite', stores => {
+       turnsToSummarize.forEach(turn => {
+           stores.agent_turns.delete(turn.id);
+       });
+       stores.agent_memory.put({
+           id: threadId + ':rolling_summary',
+           threadId: threadId,
+           memoryKey: 'rolling_summary',
+           value: mergedSummary,
+           updatedAt: Date.now()
+       });
+   });
+
+   await upsertAgentMemory(threadId, 'recent_turns', recentTurns);
+}
+
+async function trimAgentEvents(threadId) {
+   const events = await getAgentEvents(threadId);
+   if (events.length <= AGENT_MAX_RECENT_EVENTS) return;
+
+   const eventsToDelete = events.slice(0, events.length - AGENT_MAX_RECENT_EVENTS);
+   await runInAgentTransaction(['agent_events'], 'readwrite', stores => {
+       eventsToDelete.forEach(event => {
+           stores.agent_events.delete(event.id);
+       });
+   });
+}
+
+async function getAgentMemorySummary(threadId) {
+   const rollingSummary = await getAgentMemory(threadId, 'rolling_summary');
+   return rollingSummary && rollingSummary.value ? String(rollingSummary.value) : '';
+}
+
+async function getAgentPlanningMemory(threadId) {
+   const rollingSummary = await getAgentMemorySummary(threadId);
+   const recentTurns = await getAgentTurns(threadId);
+   const recentTurnSummary = recentTurns
+       .slice(-6)
+       .map(turn => String(turn.role || '').toUpperCase() + ' · ' + String(turn.content || '').slice(0, 180))
+       .join('\n');
+
+   return [rollingSummary, recentTurnSummary].filter(Boolean).join('\n').trim();
+}
 
 function getIconMarkup(name) {
    return '<i data-lucide="' + name + '"></i>';
@@ -2831,6 +3578,91 @@ function toggleTurbo() {
 function toggleSettingsPopup() {
    const popup = document.getElementById('settingsPopup');
    popup.classList.toggle('show');
+}
+
+function callServer(functionName, ...args) {
+   return new Promise((resolve, reject) => {
+       let runner = google.script.run
+           .withSuccessHandler(resolve)
+           .withFailureHandler(reject);
+
+       runner[functionName](...args);
+   });
+}
+
+function addAgentEventMessage(label) {
+   const messages = document.getElementById('messages');
+   const emptyState = messages.querySelector('.empty-state');
+   if (emptyState) emptyState.remove();
+
+   const messageDiv = document.createElement('div');
+   messageDiv.className = 'message agent-event';
+
+   const content = document.createElement('div');
+   content.className = 'message-content';
+   content.textContent = label;
+
+   messageDiv.appendChild(content);
+   messages.appendChild(messageDiv);
+   scrollToBottom();
+}
+
+async function playAgentEvents(threadId, events) {
+   if (!Array.isArray(events) || events.length === 0) return;
+
+   for (const event of events) {
+       const label = event && event.label ? event.label : '';
+       if (label) {
+           addAgentEventMessage(label);
+       }
+       await saveAgentEvents(threadId, [event]);
+       await trimAgentEvents(threadId);
+       await new Promise(resolve => setTimeout(resolve, 180));
+   }
+}
+
+async function finalizeAgentRun(threadId, finalMessage) {
+   if (finalMessage) {
+       addMessage(finalMessage, 'bot', false);
+       await saveAgentTurn(threadId, 'agent', 'reply', finalMessage);
+   }
+
+   await compactAgentThread(threadId);
+   currentAgentState = null;
+}
+
+async function runAgentLoop(threadId, agentState) {
+   currentAgentState = agentState;
+   const response = await callServer('processRealUniverseAgentStep', agentState);
+   await playAgentEvents(threadId, response.events || []);
+
+   if (response.done) {
+       await finalizeAgentRun(threadId, response.finalMessage || '');
+       return;
+   }
+
+   currentAgentState = response.nextState || null;
+   await upsertAgentMemory(threadId, 'task_state', currentAgentState || {});
+   await runAgentLoop(threadId, currentAgentState);
+}
+
+async function sendAgentMessage(question) {
+   const context = await callServer('getActiveSheetContext');
+   const thread = await ensureAgentThread(context);
+   const memorySummary = await getAgentPlanningMemory(thread.id);
+
+   hideTypingIndicator();
+
+   await saveAgentTurn(thread.id, 'user', 'prompt', question);
+
+   const initialState = {
+       phase: 'bootstrap',
+       userPrompt: question,
+       memorySummary: memorySummary
+   };
+
+   await upsertAgentMemory(thread.id, 'task_state', initialState);
+   await runAgentLoop(thread.id, initialState);
 }
 
 function isTextModeClient(mode) {
@@ -3081,6 +3913,12 @@ function selectReasoningEffort(reasoningEffort, element) {
 function updateStatusText() {
    const mode = document.querySelector('#popupModeOptions .popup-option.active')?.textContent || 'Answer';
    const preset = document.querySelector('#popupPresetOptions .popup-option.active')?.textContent || 'No preset';
+
+   if (currentMode === 'agent') {
+       document.getElementById('statusText').textContent = 'Agent • GPT-5.4 • Live';
+       return;
+   }
+
    const capability = getCapabilityDescriptor();
    const detailLabel = capability.type === 'reasoning'
        ? getReasoningLabel(getCurrentReasoningEffort() || '')
@@ -3176,6 +4014,10 @@ function showPopupPresetError(errorMessage) {
 
 function updateMode() {
    const turboToggle = document.getElementById('turbo-toggle');
+   const presetSection = document.getElementById('popupPresetSection');
+   const modelSection = document.getElementById('popupModelSection');
+   const capabilitySection = document.getElementById('popupCapabilitySection');
+
    if (currentMode === 'action') {
        turboToggle.style.display = 'flex';
    } else {
@@ -3184,14 +4026,30 @@ function updateMode() {
        turboToggle.classList.remove('active');
    }
 
+   if (currentMode === 'agent') {
+       if (presetSection) presetSection.style.display = 'none';
+       if (modelSection) modelSection.style.display = 'none';
+       if (capabilitySection) capabilitySection.style.display = 'none';
+       updateStatusText();
+       updateSelectedCell();
+       return;
+   }
+
+   if (presetSection) presetSection.style.display = '';
    renderModelOptions();
    renderCapabilityOptions();
+   if (modelSection && isTextModeClient(currentMode)) {
+       modelSection.style.display = '';
+   }
+   if (capabilitySection) capabilitySection.style.display = '';
    
    if (dynamicPresets) {
        updatePopupPresetsUI(dynamicPresets);
    } else {
        loadDynamicPresets();
    }
+
+   updateSelectedCell();
 }
 
 function openPresetManager(mode = currentMode) {
@@ -3325,8 +4183,8 @@ function deletePresetFromModal() {
 function updateSelectedCell() {
    google.script.run.withSuccessHandler(cellInfo => {
        const selectedCell = document.getElementById('selected-cell');
-       selectedCell.textContent = 'Data selected: ' + cellInfo;
-   }).getRealUniverseSelectedCellInfo();
+       selectedCell.textContent = currentMode === 'agent' ? cellInfo : 'Data selected: ' + cellInfo;
+   }).getRealUniverseFooterContext(currentMode);
 }
 
 function addMessage(text, sender, animate = false) {
@@ -3498,7 +4356,7 @@ function sendMessage() {
    const selectedReasoning = isTextModeClient(currentMode) ? getCurrentReasoningEffort() : null;
    if (!question) return;
 
-   if (!currentPreset) {
+   if (currentMode !== 'agent' && !currentPreset) {
        alert('ยังไม่มี Preset สำหรับโหมดนี้ กรุณาสร้างหรือเลือก Preset ก่อนใช้งาน');
        return;
    }
@@ -3511,6 +4369,23 @@ function sendMessage() {
    input.value = '';
    input.style.height = 'auto';
    showTypingIndicator();
+
+   if (currentMode === 'agent') {
+       sendAgentMessage(question)
+           .catch(error => {
+               addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', false);
+           })
+           .finally(() => {
+               hideTypingIndicator();
+               input.disabled = false;
+               sendButton.disabled = false;
+               isTyping = false;
+               updateSendButton();
+               input.focus();
+               updateSelectedCell();
+           });
+       return;
+   }
 
    google.script.run
        .withSuccessHandler(answer => {
