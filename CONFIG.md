@@ -40,6 +40,11 @@ const AGENT_MODE_SYSTEM_PROMPT = [
   'Do not include markdown code fences.'
 ].join('\n');
 
+const AGENT_OPERATIONAL_KEYWORDS = [
+  'write', 'fill', 'insert', 'create column', 'add column', 'append column', 'update', 'analyze', 'classify', 'categorize', 'tag', 'score', 'sentiment',
+  'เขียน', 'ใส่', 'เพิ่ม', 'สร้างคอลัมน์', 'สร้างคอลั่ม', 'เพิ่มคอลัมน์', 'เพิ่มคอลั่ม', 'แทรกคอลัมน์', 'วิเคราะห์', 'จัดหมวด', 'ทำ sentiment', 'ลงคอลัมน์', 'ลงคอลั่ม'
+];
+
 const MODEL_REGISTRY = {
   'gpt-4.1': {
     label: 'GPT-4.1',
@@ -877,12 +882,32 @@ function buildAgentPlanningPrompt(userPrompt, agentState) {
   }, null, 2);
 }
 
-function buildAgentPlan(userPrompt, agentState) {
+function isAgentOperationalTask(userPrompt) {
+  const normalizedPrompt = cleanCellData(userPrompt || '').toLowerCase();
+  if (!normalizedPrompt) return false;
+
+  return AGENT_OPERATIONAL_KEYWORDS.some(keyword => normalizedPrompt.includes(keyword));
+}
+
+function getAgentPlanningSystemPrompt(strictExecution) {
+  if (!strictExecution) return AGENT_MODE_SYSTEM_PROMPT;
+
+  return [
+    AGENT_MODE_SYSTEM_PROMPT,
+    'This request requires execution, not just explanation.',
+    'You must return executable actions in the actions array.',
+    'If the user gives a spreadsheet column letter like A, B, or C, treat it as a valid target/source column reference even if the header is blank.',
+    'Only use insert_column when the user explicitly asks to create/add/insert a new column or a new named header.'
+  ].join('\n');
+}
+
+function buildAgentPlan(userPrompt, agentState, options = {}) {
   const agentConfig = resolveAgentModelConfig(agentState && agentState.selectedModel, agentState && agentState.reasoningEffort);
+  const strictExecution = Boolean(options && options.strictExecution);
   const payload = {
     model: agentConfig.model,
     messages: [
-      { role: 'system', content: AGENT_MODE_SYSTEM_PROMPT },
+      { role: 'system', content: getAgentPlanningSystemPrompt(strictExecution) },
       { role: 'user', content: buildAgentPlanningPrompt(userPrompt, agentState) }
     ],
     max_tokens: agentConfig.planningMaxTokens,
@@ -969,6 +994,7 @@ function processRealUniverseAgentStep(agentState) {
         memorySummary: state.memorySummary || '',
         selectedModel: agentConfig.model,
         reasoningEffort: agentConfig.reasoning,
+        planRetryCount: 0,
         context: context,
         executionLog: []
       }
@@ -976,11 +1002,36 @@ function processRealUniverseAgentStep(agentState) {
   }
 
   if (phase === 'plan') {
-    const plan = buildAgentPlan(state.userPrompt || '', state);
+    const isOperationalTask = isAgentOperationalTask(state.userPrompt || '');
+    const retryCount = Number(state.planRetryCount || 0);
+    const plan = buildAgentPlan(state.userPrompt || '', state, {
+      strictExecution: isOperationalTask && retryCount > 0
+    });
     const events = [
       { type: 'status', label: 'Planning next steps' },
       { type: 'status', label: plan.summary || 'Plan ready' }
     ];
+
+    if (isOperationalTask && !plan.actions.length) {
+      if (retryCount < 1) {
+        return {
+          done: false,
+          events: events.concat({ type: 'status', label: 'Refining executable steps' }),
+          nextState: {
+            ...state,
+            phase: 'plan',
+            planRetryCount: retryCount + 1
+          }
+        };
+      }
+
+      return {
+        done: true,
+        events: events.concat({ type: 'error', label: 'Could not build executable steps' }),
+        finalMessage: 'ผมเข้าใจว่าเป็นงานที่ต้องลงมือทำกับชีต แต่ยังสร้างขั้นตอนที่รันได้ไม่สำเร็จ กรุณาระบุคอลัมน์ต้นทางหรือปลายทางให้ชัดขึ้นอีกครั้งครับ',
+        nextState: null
+      };
+    }
 
     if (!plan.actions.length) {
       return {
@@ -998,6 +1049,7 @@ function processRealUniverseAgentStep(agentState) {
         ...state,
         phase: 'execute',
         plan: plan,
+        planRetryCount: 0,
         currentActionIndex: 0,
         currentBatchIndex: 0,
         actionRuntime: null,
@@ -1012,9 +1064,8 @@ function processRealUniverseAgentStep(agentState) {
 
     if (!action) {
       const executionLog = Array.isArray(state.executionLog) ? state.executionLog : [];
-      const finalParts = [];
-      if (plan.finalResponse) finalParts.push(plan.finalResponse);
-      if (executionLog.length > 0) finalParts.push(executionLog.join('\n'));
+      const finalParts = executionLog.length > 0 ? [executionLog.join('\n')] : [];
+      if (finalParts.length === 0 && plan.finalResponse) finalParts.push(plan.finalResponse);
 
       return {
         done: true,
@@ -1099,6 +1150,13 @@ function processRealUniverseAgentStep(agentState) {
 
       const nextBatchIndex = batchIndex + 1;
       const executionLog = state.executionLog || [];
+      const resolutionEvents = batchIndex === 0
+        ? [
+            { type: 'status', label: 'Resolved source column ' + runtime.sourceColumn.letter },
+            { type: 'status', label: 'Resolved target column ' + runtime.targetColumn.letter },
+            { type: 'status', label: 'Rows to process: ' + runtime.totalRows }
+          ]
+        : [];
       if (nextBatchIndex >= runtime.totalBatches) {
         const completedLog = executionLog.concat(
           'Wrote ' + runtime.totalRows + ' results into column ' + runtime.targetColumn.letter + '.'
@@ -1106,10 +1164,10 @@ function processRealUniverseAgentStep(agentState) {
 
         return {
           done: false,
-          events: [
+          events: resolutionEvents.concat([
             { type: 'tool_call', label: 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter },
             { type: 'tool_result', label: 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow }
-          ],
+          ]),
           nextState: advanceAgentState(state, {
             currentActionIndex: state.currentActionIndex + 1,
             currentBatchIndex: 0,
@@ -1121,10 +1179,10 @@ function processRealUniverseAgentStep(agentState) {
 
       return {
         done: false,
-        events: [
+        events: resolutionEvents.concat([
           { type: 'tool_call', label: 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter },
           { type: 'tool_result', label: 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow }
-        ],
+        ]),
         nextState: advanceAgentState(state, {
           currentBatchIndex: nextBatchIndex,
           actionRuntime: runtime
