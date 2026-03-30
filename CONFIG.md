@@ -33,115 +33,269 @@ const SIDEBAR_WIDTH = 600;
 const SIDEBAR_HEIGHT = 900;
 const CHAT_SHEET_NAME = 'ChatHistory';
 const DEBUG_LOG_SHEET_NAME = 'DebugLog';
+const PRESET_STORAGE_KEY = 'REALUNIVERSE_PRESETS_V1';
 
 /* ------------------ DYNAMIC PRESET FUNCTIONS ------------------ */
 
 /**
- * Get dynamic presets from Sheet "Preset"
- * Returns object with action and array presets based on sheet content
+ * Create empty preset store
  */
-function getDynamicPresets() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Preset');
+function createEmptyPresetStore() {
+  return {
+    version: 1,
+    presets: {
+      action: [],
+      array: [],
+      image: []
+    }
+  };
+}
 
-  // หยุดทำงานทันทีหากไม่พบ Sheet Preset
-  if (!sheet) {
-    throw new Error('❌ ไม่พบ Sheet "Preset" โปรดสร้าง Sheet ชื่อ "Preset" ก่อนใช้งาน');
+function getSupportedPresetModes() {
+  return ['action', 'array', 'image'];
+}
+
+function normalizePresetMode(mode) {
+  return getSupportedPresetModes().includes(mode) ? mode : 'action';
+}
+
+function sanitizePresetValue(value) {
+  return String(value == null ? '' : value).trim();
+}
+
+function createPresetId(mode) {
+  return `${mode}_${new Date().getTime()}_${Math.floor(Math.random() * 100000)}`;
+}
+
+function normalizePresetItem(item, fallbackMode, fallbackOrder) {
+  if (!item || typeof item !== 'object') return null;
+
+  const mode = normalizePresetMode(item.mode || fallbackMode);
+  const name = sanitizePresetValue(item.name);
+  const prompt = sanitizePresetValue(item.prompt);
+
+  if (!name || !prompt) return null;
+
+  return {
+    id: sanitizePresetValue(item.id) || createPresetId(mode),
+    mode: mode,
+    name: name,
+    prompt: prompt,
+    order: Number(item.order) > 0 ? Number(item.order) : fallbackOrder
+  };
+}
+
+function normalizePresetStore(store) {
+  const emptyStore = createEmptyPresetStore();
+  if (!store || typeof store !== 'object') return emptyStore;
+
+  const normalized = createEmptyPresetStore();
+
+  getSupportedPresetModes().forEach(mode => {
+    const items = Array.isArray(store.presets && store.presets[mode]) ? store.presets[mode] : [];
+    normalized.presets[mode] = items
+      .map((item, index) => normalizePresetItem(item, mode, index + 1))
+      .filter(Boolean)
+      .sort((a, b) => a.order - b.order)
+      .map((item, index) => ({
+        id: item.id,
+        mode: mode,
+        name: item.name,
+        prompt: item.prompt,
+        order: index + 1
+      }));
+  });
+
+  return normalized;
+}
+
+function savePresetStore(store) {
+  const normalized = normalizePresetStore(store);
+  PropertiesService.getDocumentProperties().setProperty(PRESET_STORAGE_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+function buildPresetStoreFromLegacySheet(sheet) {
+  if (!sheet) return null;
+
+  const store = createEmptyPresetStore();
+  const legacyConfigs = [
+    { mode: 'action', range: 'A2:B21' },
+    { mode: 'array', range: 'D2:E21' },
+    { mode: 'image', range: 'G2:H21' }
+  ];
+
+  legacyConfigs.forEach(config => {
+    const values = sheet.getRange(config.range).getValues();
+    values.forEach((row, index) => {
+      const [name, prompt] = row;
+      const normalized = normalizePresetItem({
+        id: `${config.mode}_legacy_${index + 2}`,
+        mode: config.mode,
+        name: name,
+        prompt: prompt,
+        order: index + 1
+      }, config.mode, index + 1);
+
+      if (normalized) {
+        store.presets[config.mode].push(normalized);
+      }
+    });
+  });
+
+  const hasAnyPresets = getSupportedPresetModes().some(mode => store.presets[mode].length > 0);
+  return hasAnyPresets ? normalizePresetStore(store) : null;
+}
+
+function migrateLegacyPresetSheetIfNeeded() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Preset');
+  if (!sheet) return null;
+
+  const migratedStore = buildPresetStoreFromLegacySheet(sheet);
+  if (!migratedStore) return null;
+
+  return savePresetStore(migratedStore);
+}
+
+function getPresetStore() {
+  const properties = PropertiesService.getDocumentProperties();
+  const storedValue = properties.getProperty(PRESET_STORAGE_KEY);
+
+  if (storedValue) {
+    try {
+      const parsed = JSON.parse(storedValue);
+      const normalized = normalizePresetStore(parsed);
+      if (JSON.stringify(parsed) !== JSON.stringify(normalized)) {
+        savePresetStore(normalized);
+      }
+      return normalized;
+    } catch (e) {
+      Logger.log('Error parsing preset store: ' + e.message);
+    }
   }
 
   try {
-    const presets = {
-      action: {},
-      array: {},
-      image: {}
-    };
-
-    // อ่าน Action Presets (คอลัมน์ A-B) - รองรับได้สูงสุด 20 แถว
-    const actionRange = sheet.getRange('A2:B21');
-    const actionValues = actionRange.getValues();
-
-    actionValues.forEach((row, index) => {
-      const [name, systemMessage] = row;
-      if (name && String(name).trim() && systemMessage && String(systemMessage).trim()) {
-        const key = `action_preset_${index + 2}`;
-        presets.action[key] = {
-          SYSTEM_MESSAGE: `Preset!B${index + 2}`,
-          DISPLAY_NAME: String(name).trim(),
-          ROW_NUMBER: index + 2
-        };
-      }
-    });
-
-    // อ่าน Array Presets (คอลัมน์ D-E)
-    const arrayRange = sheet.getRange('D2:E21');
-    const arrayValues = arrayRange.getValues();
-
-    arrayValues.forEach((row, index) => {
-      const [name, systemMessage] = row;
-      if (name && String(name).trim() && systemMessage && String(systemMessage).trim()) {
-        const key = `array_preset_${index + 2}`;
-        presets.array[key] = {
-          SYSTEM_MESSAGE: `Preset!E${index + 2}`,
-          DISPLAY_NAME: String(name).trim(),
-          ROW_NUMBER: index + 2
-        };
-      }
-    });
-
-    // อ่าน Image Presets (คอลัมน์ G-H)
-    const imageRange = sheet.getRange('G2:H21');
-    const imageValues = imageRange.getValues();
-
-    imageValues.forEach((row, index) => {
-      const [name, promptTemplate] = row;
-      if (name && String(name).trim() && promptTemplate && String(promptTemplate).trim()) {
-        const key = `image_preset_${index + 2}`;
-        presets.image[key] = {
-          SYSTEM_MESSAGE: `Preset!H${index + 2}`,
-          DISPLAY_NAME: String(name).trim(),
-          ROW_NUMBER: index + 2
-        };
-      }
-    });
-
-    if (Object.keys(presets.action).length === 0 && Object.keys(presets.array).length === 0) {
-      throw new Error('❌ Sheet "Preset" ว่างเปล่า\n\nโปรดเพิ่มข้อมูล Preset:\n- Action Presets: คอลัมน์ A-B (ชื่อ-คำสั่ง)\n- Array Presets: คอลัมน์ D-E (ชื่อ-คำสั่ง)');
-    }
-
-    Logger.log('Dynamic presets loaded successfully:');
-    Logger.log('Action presets: ' + Object.keys(presets.action).length);
-    Logger.log('Array presets: ' + Object.keys(presets.array).length);
-
-    return presets;
-
+    const migratedStore = migrateLegacyPresetSheetIfNeeded();
+    if (migratedStore) return migratedStore;
   } catch (e) {
-    if (e.message.includes('❌')) throw e;
-    throw new Error('❌ เกิดข้อผิดพลาดในการอ่าน Sheet "Preset":\n' + e.message);
+    Logger.log('Error migrating legacy presets: ' + e.message);
   }
+
+  return createEmptyPresetStore();
+}
+
+function buildDynamicPresetResponse(store) {
+  const normalized = normalizePresetStore(store);
+  const response = {
+    action: {},
+    array: {},
+    image: {}
+  };
+
+  getSupportedPresetModes().forEach(mode => {
+    normalized.presets[mode].forEach(item => {
+      response[mode][item.id] = {
+        SYSTEM_MESSAGE: item.prompt,
+        DISPLAY_NAME: item.name,
+        PROMPT: item.prompt,
+        ORDER: item.order,
+        MODE: mode
+      };
+    });
+  });
+
+  return response;
+}
+
+/**
+ * Get dynamic presets from Document Properties
+ */
+function getDynamicPresets() {
+  return buildDynamicPresetResponse(getPresetStore());
+}
+
+function getPresetById(mode, presetId) {
+  const store = getPresetStore();
+  const normalizedMode = normalizePresetMode(mode);
+  const presets = store.presets[normalizedMode] || [];
+
+  const matchedPreset = presets.find(item => item.id === presetId);
+  if (matchedPreset) return matchedPreset;
+
+  return presets.length > 0 ? presets[0] : null;
 }
 
 function getPresetDescriptionByKey(presetKey) {
   try {
-    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Preset');
-    if (!sheet) return 'ไม่มีคำอธิบาย';
-
-    if (presetKey.includes('action_preset_')) {
-      const rowNum = presetKey.split('_')[2];
-      const descValue = sheet.getRange(`C${rowNum}`).getValue();
-      if (descValue && String(descValue).trim()) return String(descValue).trim();
-    } else if (presetKey.includes('array_preset_')) {
-      const rowNum = presetKey.split('_')[2];
-      const descValue = sheet.getRange(`F${rowNum}`).getValue();
-      if (descValue && String(descValue).trim()) return String(descValue).trim();
-    } else if (presetKey.includes('image_preset_')) {
-      const rowNum = presetKey.split('_')[2];
-      const descValue = sheet.getRange(`I${rowNum}`).getValue();
-      if (descValue && String(descValue).trim()) return String(descValue).trim();
+    const presets = getDynamicPresets();
+    for (const mode of getSupportedPresetModes()) {
+      if (presets[mode] && presets[mode][presetKey]) {
+        return presets[mode][presetKey].PROMPT || 'ไม่มีคำอธิบาย';
+      }
     }
-
-    return 'ไม่มีคำอธิบาย';
   } catch (e) {
-    return 'ไม่สามารถอ่านคำอธิบายได้';
+    Logger.log('Error reading preset description: ' + e.message);
   }
+
+  return 'ไม่มีคำอธิบาย';
+}
+
+function saveDynamicPreset(mode, presetId, presetName, promptText) {
+  const normalizedMode = normalizePresetMode(mode);
+  const name = sanitizePresetValue(presetName);
+  const prompt = sanitizePresetValue(promptText);
+
+  if (!name) throw new Error('กรุณาระบุชื่อ Preset');
+  if (!prompt) throw new Error('กรุณาระบุ Prompt');
+
+  const store = getPresetStore();
+  const modePresets = store.presets[normalizedMode] || [];
+  const existingIndex = modePresets.findIndex(item => item.id === presetId);
+
+  if (existingIndex >= 0) {
+    modePresets[existingIndex].name = name;
+    modePresets[existingIndex].prompt = prompt;
+  } else {
+    modePresets.push({
+      id: createPresetId(normalizedMode),
+      mode: normalizedMode,
+      name: name,
+      prompt: prompt,
+      order: modePresets.length + 1
+    });
+  }
+
+  store.presets[normalizedMode] = modePresets;
+  const savedStore = savePresetStore(store);
+  const savedPreset = savedStore.presets[normalizedMode][existingIndex >= 0 ? existingIndex : savedStore.presets[normalizedMode].length - 1];
+
+  return {
+    presets: buildDynamicPresetResponse(savedStore),
+    selectedPresetId: savedPreset ? savedPreset.id : null
+  };
+}
+
+function deleteDynamicPreset(mode, presetId) {
+  const normalizedMode = normalizePresetMode(mode);
+  const store = getPresetStore();
+  const modePresets = store.presets[normalizedMode] || [];
+
+  const filteredPresets = modePresets.filter(item => item.id !== presetId)
+    .map((item, index) => ({
+      id: item.id,
+      mode: item.mode,
+      name: item.name,
+      prompt: item.prompt,
+      order: index + 1
+    }));
+
+  store.presets[normalizedMode] = filteredPresets;
+  const savedStore = savePresetStore(store);
+
+  return {
+    presets: buildDynamicPresetResponse(savedStore),
+    deletedPresetId: presetId
+  };
 }
 
 /* ------------------ MAIN LIBRARY FUNCTIONS ------------------ */
@@ -400,15 +554,8 @@ function processRealUniverseStandard(prompt, preset, temperature) {
 
 function getDynamicPresetSystemMessage(presetKey, mode) {
   try {
-    const presets = getDynamicPresets();
-    const modePresets = presets[mode] || {};
-
-    if (modePresets[presetKey]) {
-      return modePresets[presetKey].SYSTEM_MESSAGE;
-    }
-
-    const firstKey = Object.keys(modePresets)[0];
-    if (firstKey) return modePresets[firstKey].SYSTEM_MESSAGE;
+    const preset = getPresetById(mode, presetKey);
+    if (preset) return preset.prompt;
 
     throw new Error('No presets available for mode: ' + mode);
   } catch (e) {
@@ -1183,6 +1330,10 @@ function insertImageToSheet(imageUrl, description) {
 }
 
 function getRealUniverseSystemMessage(cellReference, mode = 'action') {
+  if (cellReference && typeof cellReference === 'string' && !cellReference.includes('Preset!')) {
+    return cellReference.trim();
+  }
+
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Preset');
 
   if (!sheet) {
@@ -1819,6 +1970,13 @@ body {
     color: #1d1d1f;
     margin-bottom: 6px;
 }
+.popup-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
 
 .popup-options {
     display: flex;
@@ -1844,6 +2002,166 @@ body {
     background: #8360c3;
     color: white;
     border-color: #8360c3;
+}
+.preset-manage-btn,
+.preset-secondary-btn,
+.preset-primary-btn,
+.empty-action-btn {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: white;
+    color: #1d1d1f;
+    cursor: pointer;
+    font-size: 10px;
+    padding: 6px 10px;
+    transition: all 0.2s ease;
+}
+.preset-manage-btn:hover,
+.preset-secondary-btn:hover,
+.preset-primary-btn:hover,
+.empty-action-btn:hover {
+    background: #f8f9fa;
+}
+.preset-primary-btn {
+    background: #8360c3;
+    border-color: #8360c3;
+    color: white;
+}
+.preset-primary-btn:hover {
+    background: #6f4fae;
+}
+.preset-secondary-btn.danger {
+    color: #b91c1c;
+    border-color: #fecaca;
+    background: #fff5f5;
+}
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 24, 39, 0.32);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 2000;
+}
+.modal-overlay.show {
+    display: flex;
+}
+.preset-manager-modal {
+    width: min(680px, 100%);
+    max-height: 90vh;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 18px 48px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.preset-manager-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid #eef0f3;
+}
+.preset-manager-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+.preset-manager-subtitle {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 2px;
+}
+.modal-close-btn {
+    border: none;
+    background: transparent;
+    color: #6b7280;
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+    padding: 4px;
+}
+.preset-manager-body {
+    padding: 16px 18px 18px;
+    overflow-y: auto;
+}
+.preset-manager-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 180px;
+    overflow-y: auto;
+    margin-bottom: 6px;
+}
+.preset-list-item {
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: white;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s ease;
+}
+.preset-list-item:hover {
+    border-color: #c4b5fd;
+    background: #faf8ff;
+}
+.preset-list-item.active {
+    border-color: #8360c3;
+    background: #f5f0ff;
+}
+.preset-list-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin-bottom: 4px;
+}
+.preset-list-preview {
+    font-size: 10px;
+    color: #6b7280;
+    line-height: 1.4;
+}
+.preset-input,
+.preset-textarea {
+    width: 100%;
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-family: inherit;
+    color: #1d1d1f;
+    background: white;
+    outline: none;
+}
+.preset-input:focus,
+.preset-textarea:focus {
+    border-color: #8360c3;
+    box-shadow: 0 0 0 3px rgba(131, 96, 195, 0.12);
+}
+.preset-textarea {
+    min-height: 140px;
+    resize: vertical;
+    line-height: 1.5;
+}
+.preset-manager-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+.empty-preset-state {
+    padding: 14px;
+    border: 1px dashed #d1d5db;
+    border-radius: 10px;
+    font-size: 10px;
+    color: #6b7280;
+    text-align: center;
+    line-height: 1.5;
 }
 
 .array-info {
@@ -2019,7 +2337,10 @@ body {
                         </div>
                         
                         <div class="popup-section">
-                            <div class="popup-title">⚙️ Preset</div>
+                            <div class="popup-title-row">
+                                <div class="popup-title">⚙️ Preset</div>
+                                <button class="preset-manage-btn" onclick="openPresetManager()">Manage</button>
+                            </div>
                             <div class="popup-options" id="popupPresetOptions">
                                 <div style="padding: 12px; text-align: center; font-size: 10px; color: #86868b;">
                                     Loading presets...
@@ -2046,6 +2367,48 @@ body {
         <div id="selected-cell" class="array-info">Selected: No data selected</div>
     </div>
 </div>
+<div class="modal-overlay" id="presetManagerModal" onclick="handlePresetModalBackdrop(event)">
+    <div class="preset-manager-modal">
+        <div class="preset-manager-header">
+            <div>
+                <div class="preset-manager-title">Manage Presets</div>
+                <div class="preset-manager-subtitle">สร้าง แก้ไข และลบ Preset แยกตาม Mode</div>
+            </div>
+            <button class="modal-close-btn" onclick="closePresetManager()">×</button>
+        </div>
+        <div class="preset-manager-body">
+            <div class="popup-section">
+                <div class="popup-title">🎯 Mode</div>
+                <div class="popup-options" id="presetManagerModeOptions">
+                    <div class="popup-option active" data-mode="action" onclick="selectPresetManagerMode('action', this)">Answer</div>
+                    <div class="popup-option" data-mode="array" onclick="selectPresetManagerMode('array', this)">Array</div>
+                    <div class="popup-option" data-mode="image" onclick="selectPresetManagerMode('image', this)">Create Picture</div>
+                </div>
+            </div>
+
+            <div class="popup-section">
+                <div class="popup-title">รายการ Preset</div>
+                <div class="preset-manager-list" id="presetManagerList"></div>
+            </div>
+
+            <div class="popup-section">
+                <div class="popup-title">Preset Name</div>
+                <input class="preset-input" id="presetNameInput" type="text" placeholder="เช่น วิเคราะห์ข้อมูล" />
+            </div>
+
+            <div class="popup-section">
+                <div class="popup-title">Prompt</div>
+                <textarea class="preset-textarea" id="presetPromptInput" placeholder="ระบุ prompt สำหรับ mode นี้"></textarea>
+            </div>
+
+            <div class="preset-manager-actions">
+                <button class="preset-secondary-btn" onclick="resetPresetForm()">New preset</button>
+                <button class="preset-secondary-btn danger" id="deletePresetButton" onclick="deletePresetFromModal()" style="display: none;">Delete</button>
+                <button class="preset-primary-btn" onclick="savePresetFromModal()">Save preset</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script>
 let currentMode = 'action';
 let currentPreset = null;
@@ -2054,10 +2417,11 @@ let isTyping = false;
 let currentTypingElement = null;
 let currentTypingText = '';
 let turboMode = false;
+let presetManagerMode = 'action';
+let editingPresetId = null;
 
 // Dynamic presets storage
 let dynamicPresets = null;
-let presetDescriptions = {};
 
 function parseMarkdown(text) {
    return text.replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>');
@@ -2163,22 +2527,33 @@ function selectPopupTemp(tempName, element, tempValue) {
 
 function updateStatusText() {
    const mode = document.querySelector('#settingsPopup .popup-section:nth-child(1) .popup-option.active').textContent;
-   const preset = document.querySelector('#popupPresetOptions .popup-option.active')?.textContent || 'Loading...';
+   const preset = document.querySelector('#popupPresetOptions .popup-option.active')?.textContent || 'No preset';
    const creativity = document.querySelector('#settingsPopup .popup-section:nth-child(3) .popup-option.active').textContent;
    
    const statusText = \`\${mode} • \${preset} • \${creativity}\`;
    document.getElementById('statusText').textContent = statusText;
 }
 
-/**
-* Load dynamic presets from backend
-*/
+function getPresetEntriesByMode(mode) {
+   const presetMap = (dynamicPresets && dynamicPresets[mode]) ? dynamicPresets[mode] : {};
+   return Object.keys(presetMap)
+       .map(key => ({ id: key, ...presetMap[key] }))
+       .sort((a, b) => (a.ORDER || 0) - (b.ORDER || 0));
+}
+
+function hasAnyPresets(presets) {
+   return ['action', 'array', 'image'].some(mode => Object.keys((presets && presets[mode]) || {}).length > 0);
+}
+
 function loadDynamicPresets() {
    google.script.run
        .withSuccessHandler(presets => {
            dynamicPresets = presets;
            updatePopupPresetsUI(presets);
-           loadPresetDescriptions();
+           renderPresetManagerList();
+           if (!hasAnyPresets(presets)) {
+               openPresetManager(currentMode);
+           }
        })
        .withFailureHandler(error => {
            console.error('Error loading presets:', error);
@@ -2187,58 +2562,30 @@ function loadDynamicPresets() {
        .getDynamicPresets();
 }
 
-/**
-* Load preset descriptions for UI
-*/
-function loadPresetDescriptions() {
-   if (!dynamicPresets) return;
-   
-   const allPresetKeys = [
-       ...Object.keys(dynamicPresets.action || {}),
-       ...Object.keys(dynamicPresets.array || {})
-   ];
-   
-   allPresetKeys.forEach(key => {
-       google.script.run
-           .withSuccessHandler(description => {
-               presetDescriptions[key] = description;
-           })
-           .withFailureHandler(() => {
-               presetDescriptions[key] = 'ไม่มีคำอธิบาย';
-           })
-           .getPresetDescriptionByKey(key);
-   });
-}
-
-/**
-* Update popup presets UI with dynamic data
-*/
 function updatePopupPresetsUI(presets) {
    const presetContainer = document.getElementById('popupPresetOptions');
    presetContainer.innerHTML = '';
 
-   const currentPresetList = presets[currentMode] || {};
-   const presetKeys = Object.keys(currentPresetList)
-       .sort((a, b) => currentPresetList[a].ROW_NUMBER - currentPresetList[b].ROW_NUMBER);
+   const presetEntries = getPresetEntriesByMode(currentMode);
    
-   if (presetKeys.length === 0) {
-       showPopupPresetError(\`❌ ไม่มี \${currentMode === 'action' ? 'Action' : 'Array'} Presets ใน Sheet "Preset"\`);
+   if (presetEntries.length === 0) {
+       currentPreset = null;
+       showPopupPresetError('ยังไม่มี Preset ในโหมดนี้');
        return;
    }
    
-   let presetExists = currentPreset && presetKeys.includes(currentPreset);
-   if (!presetExists && presetKeys.length > 0) {
-       currentPreset = presetKeys[0];
+   const presetExists = currentPreset && presetEntries.some(item => item.id === currentPreset);
+   if (!presetExists) {
+       currentPreset = presetEntries[0].id;
    }
    
-   presetKeys.forEach(key => {
-       const preset = currentPresetList[key];
+   presetEntries.forEach(preset => {
        const option = document.createElement('div');
        option.className = 'popup-option';
        option.textContent = preset.DISPLAY_NAME;
-       option.onclick = () => selectPopupPreset(preset.DISPLAY_NAME, option, key);
+       option.onclick = () => selectPopupPreset(preset.DISPLAY_NAME, option, preset.id);
        
-       if (key === currentPreset) {
+       if (preset.id === currentPreset) {
            option.classList.add('active');
        }
        
@@ -2254,16 +2601,14 @@ function updatePopupPresetsUI(presets) {
 function showPopupPresetError(errorMessage) {
    const presetContainer = document.getElementById('popupPresetOptions');
    presetContainer.innerHTML = \`
-       <div style="padding: 12px; color: #dc2626; font-size: 10px; text-align: center; line-height: 1.4;">
-           \${errorMessage.replace(/\\n/g, '<br>')}
+       <div class="empty-preset-state">
+           <div style="margin-bottom: 10px;">\${errorMessage.replace(/\\n/g, '<br>')}</div>
+           <button class="empty-action-btn" onclick="openPresetManager()">Create preset</button>
        </div>
    \`;
    updateStatusText();
 }
 
-/**
-* Updated updateMode function
-*/
 function updateMode() {
    const turboToggle = document.getElementById('turbo-toggle');
    if (currentMode === 'action') {
@@ -2274,7 +2619,137 @@ function updateMode() {
        turboToggle.classList.remove('active');
    }
    
-   loadDynamicPresets();
+   if (dynamicPresets) {
+       updatePopupPresetsUI(dynamicPresets);
+   } else {
+       loadDynamicPresets();
+   }
+}
+
+function openPresetManager(mode = currentMode) {
+   presetManagerMode = mode || currentMode || 'action';
+   editingPresetId = null;
+   document.getElementById('settingsPopup').classList.remove('show');
+   const modal = document.getElementById('presetManagerModal');
+   modal.classList.add('show');
+   syncPresetManagerModeOptions();
+   resetPresetForm();
+   renderPresetManagerList();
+}
+
+function closePresetManager() {
+   document.getElementById('presetManagerModal').classList.remove('show');
+}
+
+function handlePresetModalBackdrop(event) {
+   if (event.target.id === 'presetManagerModal') {
+       closePresetManager();
+   }
+}
+
+function syncPresetManagerModeOptions() {
+   document.querySelectorAll('#presetManagerModeOptions .popup-option').forEach(option => {
+       option.classList.toggle('active', option.dataset.mode === presetManagerMode);
+   });
+}
+
+function selectPresetManagerMode(mode, element) {
+   presetManagerMode = mode;
+   editingPresetId = null;
+   document.querySelectorAll('#presetManagerModeOptions .popup-option').forEach(option => {
+       option.classList.remove('active');
+   });
+   element.classList.add('active');
+   resetPresetForm();
+   renderPresetManagerList();
+}
+
+function renderPresetManagerList() {
+   const list = document.getElementById('presetManagerList');
+   if (!list) return;
+
+   list.innerHTML = '';
+   const entries = getPresetEntriesByMode(presetManagerMode);
+
+   if (entries.length === 0) {
+       list.innerHTML = '<div class="empty-preset-state">ยังไม่มี Preset ในโหมดนี้<br>สร้างรายการแรกได้จากฟอร์มด้านล่าง</div>';
+       return;
+   }
+
+   entries.forEach(entry => {
+       const item = document.createElement('button');
+       item.className = 'preset-list-item';
+       item.type = 'button';
+       if (entry.id === editingPresetId) {
+           item.classList.add('active');
+       }
+
+       const previewText = (entry.PROMPT || '').slice(0, 120);
+       item.innerHTML = \`
+           <div class="preset-list-name">\${entry.DISPLAY_NAME}</div>
+           <div class="preset-list-preview">\${previewText || 'ไม่มี prompt'}</div>
+       \`;
+       item.onclick = () => selectPresetForEditing(entry.id);
+       list.appendChild(item);
+   });
+}
+
+function resetPresetForm() {
+   editingPresetId = null;
+   document.getElementById('presetNameInput').value = '';
+   document.getElementById('presetPromptInput').value = '';
+   document.getElementById('deletePresetButton').style.display = 'none';
+   renderPresetManagerList();
+}
+
+function selectPresetForEditing(presetId) {
+   const preset = (dynamicPresets && dynamicPresets[presetManagerMode]) ? dynamicPresets[presetManagerMode][presetId] : null;
+   if (!preset) return;
+
+   editingPresetId = presetId;
+   document.getElementById('presetNameInput').value = preset.DISPLAY_NAME || '';
+   document.getElementById('presetPromptInput').value = preset.PROMPT || '';
+   document.getElementById('deletePresetButton').style.display = 'inline-flex';
+   renderPresetManagerList();
+}
+
+function savePresetFromModal() {
+   const presetName = document.getElementById('presetNameInput').value.trim();
+   const prompt = document.getElementById('presetPromptInput').value.trim();
+
+   google.script.run
+       .withSuccessHandler(result => {
+           dynamicPresets = result.presets;
+           if (currentMode === presetManagerMode || !currentPreset) {
+               currentPreset = result.selectedPresetId;
+           }
+           updatePopupPresetsUI(dynamicPresets);
+           editingPresetId = result.selectedPresetId;
+           selectPresetForEditing(result.selectedPresetId);
+       })
+       .withFailureHandler(error => {
+           alert('เกิดข้อผิดพลาด: ' + error.toString());
+       })
+       .saveDynamicPreset(presetManagerMode, editingPresetId, presetName, prompt);
+}
+
+function deletePresetFromModal() {
+   if (!editingPresetId) return;
+
+   google.script.run
+       .withSuccessHandler(result => {
+           dynamicPresets = result.presets;
+           if (currentPreset === result.deletedPresetId) {
+               currentPreset = null;
+           }
+           updatePopupPresetsUI(dynamicPresets);
+           resetPresetForm();
+           renderPresetManagerList();
+       })
+       .withFailureHandler(error => {
+           alert('เกิดข้อผิดพลาด: ' + error.toString());
+       })
+       .deleteDynamicPreset(presetManagerMode, editingPresetId);
 }
 
 function updateSelectedCell() {
@@ -2451,7 +2926,7 @@ function sendMessage() {
    if (!question) return;
 
    if (!currentPreset) {
-       alert('โปรดรอให้ระบบโหลด Presets เสร็จก่อนใช้งาน');
+       alert('ยังไม่มี Preset สำหรับโหมดนี้ กรุณาสร้างหรือเลือก Preset ก่อนใช้งาน');
        return;
    }
 
@@ -2578,7 +3053,6 @@ window.onload = function() {
        messageInput.focus();
    }, 100);
    
-   loadDynamicPresets();
    updateMode();
    setInterval(updateSelectedCell, 1000);
    initializeDisplayMode();
