@@ -3461,7 +3461,7 @@ async function compactAgentThread(threadId) {
        const roleLabel = String(turn.role || '').toUpperCase();
        return roleLabel + ' · ' + String(turn.content || '').slice(0, 180);
    });
-   const mergedSummary = (priorSummary + '\n' + summaryLines.join('\n')).trim().slice(-AGENT_MAX_SUMMARY_LENGTH);
+   const mergedSummary = (priorSummary + '\\n' + summaryLines.join('\\n')).trim().slice(-AGENT_MAX_SUMMARY_LENGTH);
 
    await runInAgentTransaction(['agent_turns', 'agent_memory'], 'readwrite', stores => {
        turnsToSummarize.forEach(turn => {
@@ -3502,9 +3502,9 @@ async function getAgentPlanningMemory(threadId) {
    const recentTurnSummary = recentTurns
        .slice(-6)
        .map(turn => String(turn.role || '').toUpperCase() + ' · ' + String(turn.content || '').slice(0, 180))
-       .join('\n');
+       .join('\\n');
 
-   return [rollingSummary, recentTurnSummary].filter(Boolean).join('\n').trim();
+   return [rollingSummary, recentTurnSummary].filter(Boolean).join('\\n').trim();
 }
 
 function getIconMarkup(name) {
@@ -4541,6 +4541,26 @@ function initializeDisplayMode() {
        .getCurrentDisplayMode();
 }
 
+function registerGlobalShellHandlers() {
+   if (typeof window === 'undefined') return;
+   Object.assign(window, {
+       toggleDisplayMode,
+       toggleSettingsPopup,
+       sendQuickAction,
+       toggleTurbo,
+       selectPopupMode,
+       selectPopupModel,
+       openPresetManager,
+       closePresetManager,
+       handlePresetModalBackdrop,
+       selectPresetManagerMode,
+       resetPresetForm,
+       deletePresetFromModal,
+       savePresetFromModal,
+       sendMessage
+   });
+}
+
 // Close popup when clicking outside
 document.addEventListener('click', function(event) {
    const popup = document.getElementById('settingsPopup');
@@ -4575,6 +4595,8 @@ if (document.readyState === 'loading') {
 } else {
    bootRealUniverseApp();
 }
+
+registerGlobalShellHandlers();
 </script>
 </body>
 </html>`;
