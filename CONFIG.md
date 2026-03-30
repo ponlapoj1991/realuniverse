@@ -16,6 +16,127 @@ const MODEL_CONFIG = {
   image: { model: 'dall-e-3', size: '1024x1024', quality: 'hd', n: 1 }
 };
 
+const MODEL_REGISTRY = {
+  'gpt-4.1': {
+    label: 'GPT-4.1',
+    apiType: 'chat',
+    supportsTemperature: true,
+    supportsReasoning: false,
+    supportedModes: ['action', 'array']
+  },
+  'gpt-4.1-mini': {
+    label: 'GPT-4.1 Mini',
+    apiType: 'chat',
+    supportsTemperature: true,
+    supportsReasoning: false,
+    supportedModes: ['action', 'array']
+  },
+  'gpt-4.1-nano': {
+    label: 'GPT-4.1 Nano',
+    apiType: 'chat',
+    supportsTemperature: true,
+    supportsReasoning: false,
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5': {
+    label: 'GPT-5',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['minimal', 'low', 'medium', 'high'],
+    defaultReasoning: 'medium',
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5-mini': {
+    label: 'GPT-5 Mini',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['minimal', 'low', 'medium', 'high'],
+    defaultReasoning: 'medium',
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5-nano': {
+    label: 'GPT-5 Nano',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['minimal', 'low', 'medium', 'high'],
+    defaultReasoning: 'medium',
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5.2': {
+    label: 'GPT-5.2',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['none', 'low', 'medium', 'high'],
+    defaultReasoning: 'none',
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5.4': {
+    label: 'GPT-5.4',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['none', 'low', 'medium', 'high', 'xhigh'],
+    defaultReasoning: 'none',
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5.4-mini': {
+    label: 'GPT-5.4 Mini',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['none', 'low', 'medium', 'high', 'xhigh'],
+    defaultReasoning: 'none',
+    supportedModes: ['action', 'array']
+  },
+  'gpt-5.4-nano': {
+    label: 'GPT-5.4 Nano',
+    apiType: 'responses',
+    supportsTemperature: false,
+    supportsReasoning: true,
+    reasoningOptions: ['none', 'low', 'medium', 'high', 'xhigh'],
+    defaultReasoning: 'none',
+    supportedModes: ['action', 'array']
+  }
+};
+
+const TEXT_MODE_DEFAULT_MODEL = {
+  action: MODEL_CONFIG.action_standard.model,
+  array: MODEL_CONFIG.array.model
+};
+
+const TEXT_MODE_MODEL_ORDER = [
+  'gpt-4.1',
+  'gpt-4.1-mini',
+  'gpt-4.1-nano',
+  'gpt-5',
+  'gpt-5-mini',
+  'gpt-5-nano',
+  'gpt-5.2',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano'
+];
+
+const TEMPERATURE_OPTIONS = [
+  { label: 'Exact', value: 0 },
+  { label: 'Focused', value: 0.2 },
+  { label: 'Balance', value: 0.5 },
+  { label: 'Creative', value: 0.7 }
+];
+
+const REASONING_LABELS = {
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High'
+};
+
 const TEMPERATURE_PRESETS = [0, 0.2, 0.4, 0.7];
 
 // Turbo Mode Settings
@@ -443,16 +564,109 @@ function setupRealUniverseApiKey() {
 
 /* ------------------ CORE AI PROCESSING FUNCTIONS ------------------ */
 
-function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false) {
+function isTextMode(mode) {
+  return mode === 'action' || mode === 'array';
+}
+
+function getModelRegistryEntry(modelName) {
+  return MODEL_REGISTRY[modelName] || null;
+}
+
+function getDefaultModelForMode(mode) {
+  return TEXT_MODE_DEFAULT_MODEL[mode] || MODEL_CONFIG.action_standard.model;
+}
+
+function isSelectableModelForMode(mode, modelName) {
+  const modelEntry = getModelRegistryEntry(modelName);
+  if (!modelEntry || !Array.isArray(modelEntry.supportedModes)) return false;
+  return modelEntry.supportedModes.includes(mode);
+}
+
+function resolveSelectedModelForMode(mode, selectedModel) {
+  if (!isTextMode(mode)) return null;
+  if (selectedModel && isSelectableModelForMode(mode, selectedModel)) {
+    return selectedModel;
+  }
+  return getDefaultModelForMode(mode);
+}
+
+function supportsReasoningForModel(modelName) {
+  const modelEntry = getModelRegistryEntry(modelName);
+  return !!(modelEntry && modelEntry.supportsReasoning);
+}
+
+function supportsTemperatureForModel(modelName) {
+  const modelEntry = getModelRegistryEntry(modelName);
+  return !!(modelEntry && modelEntry.supportsTemperature);
+}
+
+function getReasoningOptionsForModel(modelName) {
+  const modelEntry = getModelRegistryEntry(modelName);
+  return modelEntry && Array.isArray(modelEntry.reasoningOptions) ? modelEntry.reasoningOptions : [];
+}
+
+function getDefaultReasoningForModel(modelName) {
+  const modelEntry = getModelRegistryEntry(modelName);
+  return modelEntry && modelEntry.defaultReasoning ? modelEntry.defaultReasoning : null;
+}
+
+function normalizeReasoningEffortForModel(modelName, reasoningEffort) {
+  if (!supportsReasoningForModel(modelName)) return null;
+  const allowedOptions = getReasoningOptionsForModel(modelName);
+  if (reasoningEffort && allowedOptions.includes(reasoningEffort)) {
+    return reasoningEffort;
+  }
+  return getDefaultReasoningForModel(modelName);
+}
+
+function resolveModelConfigForMode(mode, turboMode, selectedModel) {
+  if (mode === 'action') {
+    const baseConfig = turboMode ? MODEL_CONFIG.action_turbo : MODEL_CONFIG.action_standard;
+    return {
+      ...baseConfig,
+      model: resolveSelectedModelForMode(mode, selectedModel)
+    };
+  }
+
+  if (mode === 'array') {
+    return {
+      ...MODEL_CONFIG.array,
+      model: resolveSelectedModelForMode(mode, selectedModel)
+    };
+  }
+
+  return { ...MODEL_CONFIG.image };
+}
+
+function getRealUniverseModelUiConfig() {
+  return {
+    models: TEXT_MODE_MODEL_ORDER
+      .filter(modelId => !!MODEL_REGISTRY[modelId])
+      .map(modelId => ({
+        id: modelId,
+        label: MODEL_REGISTRY[modelId].label,
+        supportsTemperature: MODEL_REGISTRY[modelId].supportsTemperature,
+        supportsReasoning: MODEL_REGISTRY[modelId].supportsReasoning,
+        reasoningOptions: MODEL_REGISTRY[modelId].reasoningOptions || [],
+        defaultReasoning: MODEL_REGISTRY[modelId].defaultReasoning || null,
+        supportedModes: MODEL_REGISTRY[modelId].supportedModes || []
+      })),
+    defaultModels: TEXT_MODE_DEFAULT_MODEL,
+    reasoningLabels: REASONING_LABELS,
+    temperatureOptions: TEMPERATURE_OPTIONS
+  };
+}
+
+function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false, selectedModel = null, reasoningEffort = null) {
   try {
     if (mode === 'action') {
       if (turboMode) {
-        return processRealUniverseTurbo(prompt, preset, temperature);
+        return processRealUniverseTurbo(prompt, preset, temperature, selectedModel, reasoningEffort);
       } else {
-        return processRealUniverseStandard(prompt, preset, temperature);
+        return processRealUniverseStandard(prompt, preset, temperature, selectedModel, reasoningEffort);
       }
     } else if (mode === 'array') {
-      return processRealUniverseArray(prompt, preset, temperature);
+      return processRealUniverseArray(prompt, preset, temperature, selectedModel, reasoningEffort);
     } else if (mode === 'image') {
       return processRealUniverseImage(prompt, preset, temperature);
     }
@@ -470,9 +684,10 @@ function isNumeric(value) {
   return !isNaN(cleanedValue) && !isNaN(parseFloat(cleanedValue));
 }
 
-function processRealUniverseStandard(prompt, preset, temperature) {
+function processRealUniverseStandard(prompt, preset, temperature, selectedModel, reasoningEffort) {
   const systemMessage = getRealUniverseSystemMessage(getDynamicPresetSystemMessage(preset, 'action'), 'action');
-  const config = MODEL_CONFIG.action_standard;
+  const config = resolveModelConfigForMode('action', false, selectedModel);
+  const effectiveReasoning = normalizeReasoningEffortForModel(config.model, reasoningEffort);
 
   let allDataArray = [];
   const rangeList = SpreadsheetApp.getActiveRangeList();
@@ -544,7 +759,8 @@ function processRealUniverseStandard(prompt, preset, temperature) {
       { role: 'user', content: enhancedPrompt }
     ],
     temperature: temperature,
-    max_tokens: config.max_tokens
+    max_tokens: config.max_tokens,
+    reasoning: effectiveReasoning ? { effort: effectiveReasoning } : undefined
   };
 
   const result = makeRealUniverseApiCallWithRetry(payload);
@@ -703,9 +919,10 @@ function formatMixedData(dataArray, calculations, userPrompt, rangeInfo) {
   return `${userPrompt}\n\n${rangeInfo}\n\nข้อมูลดิบ:\n${rawDataText}${calculationsText}\n\nคำสั่ง: ใช้ผลการคำนวณข้างต้นในการวิเคราะห์และตอบคำถามอย่างแม่นยำ`;
 }
 
-function processRealUniverseTurbo(userPrompt, presetName, temperature) {
+function processRealUniverseTurbo(userPrompt, presetName, temperature, selectedModel, reasoningEffort) {
   const reduceSystemMessage = getRealUniverseSystemMessage(getDynamicPresetSystemMessage(presetName, 'action'), 'action');
-  const config = MODEL_CONFIG.action_turbo;
+  const config = resolveModelConfigForMode('action', true, selectedModel);
+  const effectiveReasoning = normalizeReasoningEffortForModel(config.model, reasoningEffort);
 
   const rangeList = SpreadsheetApp.getActiveRangeList();
   if (!rangeList) throw new Error('No cells selected.');
@@ -758,7 +975,8 @@ function processRealUniverseTurbo(userPrompt, presetName, temperature) {
       ],
       temperature: temperature,
       max_tokens: 4096,
-      response_format: { "type": "json_object" }
+      response_format: { "type": "json_object" },
+      reasoning: effectiveReasoning ? { effort: effectiveReasoning } : undefined
     };
 
     try {
@@ -780,7 +998,8 @@ function processRealUniverseTurbo(userPrompt, presetName, temperature) {
       { role: 'user', content: finalContent }
     ],
     temperature: temperature,
-    max_tokens: config.max_tokens
+    max_tokens: config.max_tokens,
+    reasoning: effectiveReasoning ? { effort: effectiveReasoning } : undefined
   };
 
   const result = makeRealUniverseApiCallWithRetry(finalPayload);
@@ -938,10 +1157,11 @@ function getVisibleCellsForActionWithRowNumbers(range) {
   return visibleRowsAndNumbers;
 }
 
-function processRealUniverseArray(prompt, preset, temperature) {
+function processRealUniverseArray(prompt, preset, temperature, selectedModel, reasoningEffort) {
   try {
     const systemMessage = getRealUniverseSystemMessage(getDynamicPresetSystemMessage(preset, 'array'), 'array');
-    const config = MODEL_CONFIG.array;
+    const config = resolveModelConfigForMode('array', false, selectedModel);
+    const effectiveReasoning = normalizeReasoningEffortForModel(config.model, reasoningEffort);
     const rangeList = SpreadsheetApp.getActiveRangeList();
     if (!rangeList) return [['ไม่มีเซลล์ที่เลือก']];
 
@@ -989,7 +1209,8 @@ function processRealUniverseArray(prompt, preset, temperature) {
           { role: 'user', content: content }
         ],
         temperature: temperature,
-        max_tokens: config.max_tokens
+        max_tokens: config.max_tokens,
+        reasoning: effectiveReasoning ? { effort: effectiveReasoning } : undefined
       };
 
       try {
@@ -1127,7 +1348,7 @@ function getApiTypeForModel(modelName) {
  * NOTE: Responses API — ไม่ส่ง temperature (บางรุ่นไม่รองรับ)
  */
 function buildRequestBodyForApi(apiType, payload) {
-  const { model, messages, temperature, max_tokens, response_format } = payload || {};
+  const { model, messages, temperature, max_tokens, response_format, reasoning } = payload || {};
   if (apiType === 'responses') {
     const body = {
       model: model,
@@ -1139,6 +1360,9 @@ function buildRequestBodyForApi(apiType, payload) {
     }
     if (response_format) {
       body.response_format = response_format;
+    }
+    if (reasoning) {
+      body.reasoning = reasoning;
     }
     return body;
   } else {
@@ -2037,6 +2261,23 @@ body {
     flex-wrap: wrap;
 }
 
+.popup-select {
+    width: 100%;
+    min-height: 34px;
+    border: 1px solid #dbe2ea;
+    border-radius: 10px;
+    background: #f8fafc;
+    color: #1d1d1f;
+    font-size: 11px;
+    padding: 0 10px;
+    outline: none;
+}
+
+.popup-select:focus {
+    border-color: #8360c3;
+    box-shadow: 0 0 0 3px rgba(131, 96, 195, 0.12);
+}
+
 .popup-option {
     padding: 6px 10px;
     background: #f8f9fa;
@@ -2387,36 +2628,36 @@ body {
                     <!-- Settings Popup -->
                     <div class="settings-popup" id="settingsPopup">
                         <div class="popup-section">
-                            <div class="popup-title"><i data-lucide="circle-dot"></i><span>Mode</span></div>
-<div class="popup-options">
+	                            <div class="popup-title"><i data-lucide="circle-dot"></i><span>Mode</span></div>
+<div class="popup-options" id="popupModeOptions">
     <div class="popup-option active" onclick="selectPopupMode('Answer', this, 'action')">Answer</div>
     <div class="popup-option" onclick="selectPopupMode('Array', this, 'array')">Array</div>
     <div class="popup-option" onclick="selectPopupMode('Image', this, 'image')">Image</div>
 </div>
                         </div>
                         
-                        <div class="popup-section">
-                            <div class="popup-title-row">
-                                <div class="popup-title"><i data-lucide="library-big"></i><span>Preset</span></div>
-                                <button class="preset-manage-btn" onclick="openPresetManager()">Manage</button>
-                            </div>
+	                        <div class="popup-section">
+	                            <div class="popup-title-row">
+	                                <div class="popup-title"><i data-lucide="library-big"></i><span>Preset</span></div>
+	                                <button class="preset-manage-btn" onclick="openPresetManager()">Manage</button>
+	                            </div>
                             <div class="popup-options" id="popupPresetOptions">
                                 <div style="padding: 12px; text-align: center; font-size: 10px; color: #86868b;">
                                     Loading presets...
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div class="popup-section">
-                            <div class="popup-title"><i data-lucide="sliders-horizontal"></i><span>Tone</span></div>
-                            <div class="popup-options">
-                                <div class="popup-option active" onclick="selectPopupTemp('Exact', this, 0)">Exact</div>
-                                <div class="popup-option" onclick="selectPopupTemp('Focused', this, 0.2)">Focused</div>
-                                <div class="popup-option" onclick="selectPopupTemp('Balance', this, 0.5)">Balance</div>
-                                <div class="popup-option" onclick="selectPopupTemp('Creative', this, 0.7)">Creative</div>
-                            </div>
-                        </div>
-                    </div>
+	                                </div>
+	                            </div>
+	                        </div>
+	                        
+	                        <div class="popup-section" id="popupModelSection">
+	                            <div class="popup-title"><i data-lucide="cpu"></i><span>Model</span></div>
+	                            <select class="popup-select" id="popupModelSelect" onchange="selectPopupModel(this.value)"></select>
+	                        </div>
+	                        
+	                        <div class="popup-section" id="popupCapabilitySection">
+	                            <div class="popup-title" id="popupCapabilityTitle"><i data-lucide="sliders-horizontal"></i><span>Tone</span></div>
+	                            <div class="popup-options" id="popupCapabilityOptions"></div>
+	                        </div>
+	                    </div>
                     <button class="sendButton" id="sendButton" onclick="sendMessage()" aria-label="Send"></button>
                 </div>
             </div>
@@ -2477,6 +2718,32 @@ let editingPresetId = null;
 
 // Dynamic presets storage
 let dynamicPresets = null;
+let modelUiConfig = {
+   models: [],
+   defaultModels: { action: 'gpt-4.1', array: 'gpt-4.1' },
+   reasoningLabels: {
+       none: 'None',
+       minimal: 'Minimal',
+       low: 'Low',
+       medium: 'Medium',
+       high: 'High',
+       xhigh: 'Extra High'
+   },
+   temperatureOptions: [
+       { label: 'Exact', value: 0 },
+       { label: 'Focused', value: 0.2 },
+       { label: 'Balance', value: 0.5 },
+       { label: 'Creative', value: 0.7 }
+   ]
+};
+let currentModelSelections = {
+   action: 'gpt-4.1',
+   array: 'gpt-4.1'
+};
+let currentReasoningSelections = {
+   action: null,
+   array: null
+};
 
 function getIconMarkup(name) {
    return '<i data-lucide="' + name + '"></i>';
@@ -2566,13 +2833,219 @@ function toggleSettingsPopup() {
    popup.classList.toggle('show');
 }
 
+function isTextModeClient(mode) {
+   return mode === 'action' || mode === 'array';
+}
+
+function getModelDefinitionForClient(modelId) {
+   return (modelUiConfig.models || []).find(model => model.id === modelId) || null;
+}
+
+function getModelOptionsForMode(mode) {
+   return (modelUiConfig.models || []).filter(model => {
+       return Array.isArray(model.supportedModes) && model.supportedModes.includes(mode);
+   });
+}
+
+function getDefaultModelForClient(mode) {
+   return (modelUiConfig.defaultModels && modelUiConfig.defaultModels[mode]) || 'gpt-4.1';
+}
+
+function getSelectedModelForMode(mode) {
+   if (!isTextModeClient(mode)) return null;
+
+   const currentSelection = currentModelSelections[mode];
+   const modelOptions = getModelOptionsForMode(mode);
+   const hasSelection = modelOptions.some(model => model.id === currentSelection);
+   if (hasSelection) return currentSelection;
+
+   const fallbackModel = getDefaultModelForClient(mode);
+   currentModelSelections[mode] = fallbackModel;
+   return fallbackModel;
+}
+
+function getReasoningLabel(effort) {
+   return (modelUiConfig.reasoningLabels && modelUiConfig.reasoningLabels[effort]) || effort;
+}
+
+function getTemperatureOptions() {
+   return modelUiConfig.temperatureOptions || [];
+}
+
+function getTemperatureLabel(value) {
+   const option = getTemperatureOptions().find(item => Number(item.value) === Number(value));
+   return option ? option.label : 'Exact';
+}
+
+function getCurrentModelDisplayLabel() {
+   if (!isTextModeClient(currentMode)) return null;
+
+   const currentModel = getSelectedModelForMode(currentMode);
+   const modelDefinition = getModelDefinitionForClient(currentModel);
+   return modelDefinition ? modelDefinition.label : currentModel;
+}
+
+function getReasoningEffortForMode(mode) {
+   if (!isTextModeClient(mode)) return null;
+
+   const currentModel = getSelectedModelForMode(mode);
+   const modelDefinition = getModelDefinitionForClient(currentModel);
+   if (!modelDefinition || !modelDefinition.supportsReasoning) return null;
+
+   const allowedOptions = modelDefinition.reasoningOptions || [];
+   const currentSelection = currentReasoningSelections[mode];
+   if (currentSelection && allowedOptions.includes(currentSelection)) {
+       return currentSelection;
+   }
+
+   const fallbackEffort = modelDefinition.defaultReasoning || allowedOptions[0] || null;
+   currentReasoningSelections[mode] = fallbackEffort;
+   return fallbackEffort;
+}
+
+function getCurrentReasoningEffort() {
+   return getReasoningEffortForMode(currentMode);
+}
+
+function getCapabilityDescriptor() {
+   if (currentMode === 'image') {
+       return {
+           type: 'temperature',
+           title: 'Tone',
+           icon: 'sliders-horizontal'
+       };
+   }
+
+   if (isTextModeClient(currentMode)) {
+       const currentModel = getSelectedModelForMode(currentMode);
+       const modelDefinition = getModelDefinitionForClient(currentModel);
+
+       if (modelDefinition && modelDefinition.supportsReasoning) {
+           return {
+               type: 'reasoning',
+               title: 'Reasoning',
+               icon: 'brain'
+           };
+       }
+   }
+
+   return {
+       type: 'temperature',
+       title: 'Tone',
+       icon: 'sliders-horizontal'
+   };
+}
+
+function renderModelOptions() {
+   const modelSection = document.getElementById('popupModelSection');
+   const modelSelect = document.getElementById('popupModelSelect');
+   if (!modelSection || !modelSelect) return;
+
+   if (!isTextModeClient(currentMode)) {
+       modelSection.style.display = 'none';
+       modelSelect.innerHTML = '';
+       return;
+   }
+
+   modelSection.style.display = '';
+   const modelOptions = getModelOptionsForMode(currentMode);
+   if (modelOptions.length === 0) {
+       modelSection.style.display = 'none';
+       modelSelect.innerHTML = '';
+       return;
+   }
+
+   const selectedModel = getSelectedModelForMode(currentMode);
+
+   modelSelect.innerHTML = modelOptions
+       .map(model => '<option value="' + model.id + '">' + model.label + '</option>')
+       .join('');
+
+   modelSelect.value = selectedModel;
+}
+
+function renderCapabilityOptions() {
+   const capabilitySection = document.getElementById('popupCapabilitySection');
+   const capabilityTitle = document.getElementById('popupCapabilityTitle');
+   const capabilityOptions = document.getElementById('popupCapabilityOptions');
+   if (!capabilitySection || !capabilityTitle || !capabilityOptions) return;
+
+   const capability = getCapabilityDescriptor();
+   capabilitySection.style.display = '';
+   capabilityTitle.innerHTML = getIconMarkup(capability.icon) + '<span>' + capability.title + '</span>';
+   capabilityOptions.innerHTML = '';
+
+   if (capability.type === 'reasoning') {
+       const activeReasoning = getCurrentReasoningEffort();
+       const modelDefinition = getModelDefinitionForClient(getSelectedModelForMode(currentMode));
+       const reasoningOptions = modelDefinition ? (modelDefinition.reasoningOptions || []) : [];
+
+       reasoningOptions.forEach(optionKey => {
+           const option = document.createElement('div');
+           option.className = 'popup-option';
+           option.textContent = getReasoningLabel(optionKey);
+           option.onclick = () => selectReasoningEffort(optionKey, option);
+
+           if (optionKey === activeReasoning) {
+               option.classList.add('active');
+           }
+
+           capabilityOptions.appendChild(option);
+       });
+   } else {
+       getTemperatureOptions().forEach(optionDef => {
+           const option = document.createElement('div');
+           option.className = 'popup-option';
+           option.textContent = optionDef.label;
+           option.onclick = () => selectPopupTemp(optionDef.label, option, optionDef.value);
+
+           if (Number(optionDef.value) === Number(currentTemperature)) {
+               option.classList.add('active');
+           }
+
+           capabilityOptions.appendChild(option);
+       });
+   }
+
+   refreshIcons();
+}
+
+function loadModelUiConfig(callback) {
+   google.script.run
+       .withSuccessHandler(config => {
+           if (config) {
+               modelUiConfig = config;
+               currentModelSelections.action = getSelectedModelForMode('action');
+               currentModelSelections.array = getSelectedModelForMode('array');
+               currentReasoningSelections.action = getReasoningEffortForMode('action');
+               currentReasoningSelections.array = getReasoningEffortForMode('array');
+           }
+
+           if (typeof callback === 'function') callback();
+       })
+       .withFailureHandler(error => {
+           console.error('Error loading model config:', error);
+           if (typeof callback === 'function') callback();
+       })
+       .getRealUniverseModelUiConfig();
+}
+
 function selectPopupMode(modeName, element, modeValue) {
    currentMode = modeValue;
-   document.querySelectorAll('#settingsPopup .popup-section:nth-child(1) .popup-option').forEach(option => {
+   document.querySelectorAll('#popupModeOptions .popup-option').forEach(option => {
        option.classList.remove('active');
    });
    element.classList.add('active');
    updateMode();
+   updateStatusText();
+}
+
+function selectPopupModel(modelId) {
+   if (!isTextModeClient(currentMode)) return;
+
+   currentModelSelections[currentMode] = modelId;
+   currentReasoningSelections[currentMode] = getCurrentReasoningEffort();
+   renderCapabilityOptions();
    updateStatusText();
 }
 
@@ -2587,7 +3060,18 @@ function selectPopupPreset(presetName, element, presetValue) {
 
 function selectPopupTemp(tempName, element, tempValue) {
    currentTemperature = tempValue;
-   document.querySelectorAll('#settingsPopup .popup-section:nth-child(3) .popup-option').forEach(option => {
+   document.querySelectorAll('#popupCapabilityOptions .popup-option').forEach(option => {
+       option.classList.remove('active');
+   });
+   element.classList.add('active');
+   updateStatusText();
+}
+
+function selectReasoningEffort(reasoningEffort, element) {
+   if (!isTextModeClient(currentMode)) return;
+
+   currentReasoningSelections[currentMode] = reasoningEffort;
+   document.querySelectorAll('#popupCapabilityOptions .popup-option').forEach(option => {
        option.classList.remove('active');
    });
    element.classList.add('active');
@@ -2595,11 +3079,20 @@ function selectPopupTemp(tempName, element, tempValue) {
 }
 
 function updateStatusText() {
-   const mode = document.querySelector('#settingsPopup .popup-section:nth-child(1) .popup-option.active').textContent;
+   const mode = document.querySelector('#popupModeOptions .popup-option.active')?.textContent || 'Answer';
    const preset = document.querySelector('#popupPresetOptions .popup-option.active')?.textContent || 'No preset';
-   const creativity = document.querySelector('#settingsPopup .popup-section:nth-child(3) .popup-option.active').textContent;
-   
-   const statusText = \`\${mode} • \${preset} • \${creativity}\`;
+   const capability = getCapabilityDescriptor();
+   const detailLabel = capability.type === 'reasoning'
+       ? getReasoningLabel(getCurrentReasoningEffort() || '')
+       : getTemperatureLabel(currentTemperature);
+
+   const statusParts = [mode, preset];
+   if (isTextModeClient(currentMode)) {
+       statusParts.push(getCurrentModelDisplayLabel() || getDefaultModelForClient(currentMode));
+   }
+   statusParts.push(detailLabel);
+
+   const statusText = statusParts.join(' • ');
    document.getElementById('statusText').textContent = statusText;
 }
 
@@ -2690,6 +3183,9 @@ function updateMode() {
        turboMode = false;
        turboToggle.classList.remove('active');
    }
+
+   renderModelOptions();
+   renderCapabilityOptions();
    
    if (dynamicPresets) {
        updatePopupPresetsUI(dynamicPresets);
@@ -2998,6 +3494,8 @@ function sendMessage() {
    const input = document.getElementById('messageInput');
    const sendButton = document.getElementById('sendButton');
    const question = input.value.trim();
+   const selectedModel = isTextModeClient(currentMode) ? getSelectedModelForMode(currentMode) : null;
+   const selectedReasoning = isTextModeClient(currentMode) ? getCurrentReasoningEffort() : null;
    if (!question) return;
 
    if (!currentPreset) {
@@ -3037,7 +3535,7 @@ function sendMessage() {
            input.focus();
            addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', true);
        })
-       .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode);
+       .processRealUniverseAI(question, currentPreset, currentTemperature, currentMode, turboMode, selectedModel, selectedReasoning);
 }
 
 function showTypingIndicator() {
@@ -3129,11 +3627,13 @@ window.onload = function() {
    setTimeout(() => {
        messageInput.focus();
    }, 100);
-   
-   updateMode();
+
+   loadModelUiConfig(() => {
+       updateMode();
+       refreshIcons();
+   });
    setInterval(updateSelectedCell, 1000);
    initializeDisplayMode();
-   refreshIcons();
 };
 </script>
 </body>
