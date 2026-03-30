@@ -2622,12 +2622,24 @@ body {
     align-items: center;
     justify-content: center;
     transition: all 0.2s ease;
+    position: relative;
+    overflow: hidden;
 }
 
 .hamburger-btn:hover {
     background: white;
     color: #1d1d1f;
     border-color: #cbd5e1;
+}
+
+.settings-fallback {
+    font-size: 14px;
+    line-height: 1;
+    color: currentColor;
+}
+
+.hamburger-btn[data-icon-ready="true"] .settings-fallback {
+    display: none;
 }
 
 .status-text {
@@ -3101,7 +3113,7 @@ body {
                 
                 <!-- Controls in input box -->
                 <div class="in-box-controls">
-                    <button class="hamburger-btn" onclick="toggleSettingsPopup()" aria-label="Settings"><i data-lucide="settings-2"></i></button>
+                    <button class="hamburger-btn" onclick="toggleSettingsPopup(event)" aria-label="Settings"><span class="settings-fallback" aria-hidden="true">⚙</span><i data-lucide="settings-2"></i></button>
                     <span class="status-text" id="statusText">Answer • Loading... • Exact</span>
                     <button class="turbo-toggle" id="turbo-toggle" onclick="toggleTurbo()" style="display: none;"><i data-lucide="lightbulb"></i><span>Deep</span></button>
                     
@@ -3500,6 +3512,11 @@ function refreshIcons() {
    if (window.lucide && typeof window.lucide.createIcons === 'function') {
        window.lucide.createIcons();
    }
+
+   const settingsButton = document.querySelector('.hamburger-btn');
+   if (settingsButton) {
+       settingsButton.dataset.iconReady = settingsButton.querySelector('svg') ? 'true' : 'false';
+   }
 }
 
 function parseMarkdown(text) {
@@ -3575,8 +3592,12 @@ function toggleTurbo() {
 }
 
 // New Popup Functions for Hamburger Menu
-function toggleSettingsPopup() {
+function toggleSettingsPopup(event) {
+   if (event) {
+       event.stopPropagation();
+   }
    const popup = document.getElementById('settingsPopup');
+   if (!popup) return;
    popup.classList.toggle('show');
 }
 
@@ -3853,13 +3874,35 @@ function loadModelUiConfig(callback) {
                currentReasoningSelections.array = getReasoningEffortForMode('array');
            }
 
+           renderModelOptions();
+           renderCapabilityOptions();
+           updateStatusText();
+           refreshIcons();
            if (typeof callback === 'function') callback();
        })
        .withFailureHandler(error => {
            console.error('Error loading model config:', error);
+           renderModelOptions();
+           renderCapabilityOptions();
+           updateStatusText();
+           refreshIcons();
            if (typeof callback === 'function') callback();
        })
        .getRealUniverseModelUiConfig();
+}
+
+function initializeUiReadyState() {
+   renderModelOptions();
+   renderCapabilityOptions();
+   updateStatusText();
+   updateSelectedCell();
+   refreshIcons();
+}
+
+function applyInitFallback() {
+   if (document.getElementById('statusText')?.textContent?.includes('Loading...')) {
+       initializeUiReadyState();
+   }
 }
 
 function selectPopupMode(modeName, element, modeValue) {
@@ -4503,10 +4546,12 @@ window.onload = function() {
        messageInput.focus();
    }, 100);
 
+   initializeUiReadyState();
    loadModelUiConfig(() => {
        updateMode();
        refreshIcons();
    });
+   setTimeout(applyInitFallback, 1500);
    setInterval(updateSelectedCell, 1000);
    initializeDisplayMode();
 };
