@@ -1,0 +1,8 @@
+{
+  "name": "realuniverse",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate:config": "node scripts/validate-config.mjs"
+  }
+}
