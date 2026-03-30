@@ -1533,9 +1533,11 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
 }
 .messages {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 16px 12px;
     background: #F0FFFF;
@@ -1648,6 +1650,9 @@ body {
     flex-direction: column;
     align-items: center;
     position: relative;
+    width: 100%;
+    box-sizing: border-box;
+    flex-shrink: 0;
 }
 
 /* Sidebar Mode - Keep Dialog Layout */
@@ -1659,46 +1664,61 @@ body {
 .sidebar-mode .expanded-input-container {
     max-width: none;
     width: 100%;
+    padding: 6px 10px;
+    margin-bottom: 6px;
 }
 .sidebar-mode .quick-actions {
     width: 100%;
-    padding: 0 0 10px 0;
+    padding: 0 0 8px 0;
 }
 .sidebar-mode .quick-actions-buttons {
     opacity: 1;
     max-height: none;
-    margin-top: 8px;
+    margin-top: 6px;
     justify-content: center;
     flex-wrap: wrap;
     overflow-x: visible;
-    padding-bottom: 2px;
+    gap: 6px;
+    padding-bottom: 0;
 }
 .sidebar-mode .quick-action-btn {
     text-align: center;
     flex: none;
 }
+.sidebar-mode .input-area {
+    padding: 12px 12px 8px 12px;
+}
+.sidebar-mode .messages {
+    padding: 12px 12px 8px;
+}
 .sidebar-mode .in-box-controls {
-    gap: 6px;
+    gap: 4px;
     align-items: center;
+    flex-wrap: nowrap;
 }
 .sidebar-mode .status-text {
-    height: 36px;
-    font-size: 9px;
-    padding: 0 12px;
+    height: 34px;
+    font-size: 8.5px;
+    padding: 0 8px;
     border-radius: 12px;
+    flex: 1 1 0;
 }
 .sidebar-mode .turbo-toggle {
-    height: 36px;
-    font-size: 9px;
-    padding: 0 12px;
+    height: 34px;
+    font-size: 8.5px;
+    padding: 0 10px;
     border-radius: 12px;
     flex: 0 0 auto;
 }
-.sidebar-mode .hamburger-btn,
-.sidebar-mode .sendButton {
-    width: 36px;
-    min-width: 36px;
-    height: 36px;
+.sidebar-mode .hamburger-btn {
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
+}
+.sidebar-mode .array-info {
+    padding: 4px 4px 6px;
+    margin-top: 0;
+    font-size: 9px;
 }
 .sidebar-mode .settings-popup {
     left: 0;
@@ -1767,14 +1787,16 @@ body {
 .turbo-toggle {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
-    padding: 4px 8px;
-    border-radius: 6px;
-    background: transparent;
-    border: 1px solid #d1d5db;
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: 12px;
+    background: #f8fafc;
+    border: 1px solid #dbe2ea;
     cursor: pointer;
     font-size: 10px;
-    color: #86868b;
+    color: #64748b;
     outline: none;
     transition: all 0.2s ease;
 }
@@ -1886,11 +1908,11 @@ body {
 
 .hamburger-btn {
     background: #f8fafc;
-    border: 1px solid #d1d5db;
-    color: #86868b;
+    border: 1px solid #dbe2ea;
+    color: #64748b;
     cursor: pointer;
-    width: 38px;
-    height: 38px;
+    width: 34px;
+    height: 34px;
     border-radius: 12px;
     display: inline-flex;
     align-items: center;
@@ -1905,12 +1927,13 @@ body {
 }
 
 .status-text {
+    height: 34px;
     font-size: 10px;
     color: #64748b;
     border: 1px solid #dbe2ea;
     background: #f8fafc;
-    padding: 0 10px;
-    border-radius: 999px;
+    padding: 0 12px;
+    border-radius: 12px;
     flex: 1 1 auto;
     min-width: 0;
     white-space: nowrap;
@@ -2195,12 +2218,18 @@ body {
 
 .array-info {
     background: transparent;
-    padding: 2px 4px 0;
+    width: 100%;
+    padding: 2px 4px 6px;
     border-radius: 4px;
     font-size: 10px;
     color: #2563eb;
     border: none;
     margin-top: 2px;
+    text-align: center;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .messages::-webkit-scrollbar {
     width: 4px;
