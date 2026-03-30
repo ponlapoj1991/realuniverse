@@ -185,6 +185,28 @@ const SIDEBAR_HEIGHT = 900;
 const CHAT_SHEET_NAME = 'ChatHistory';
 const DEBUG_LOG_SHEET_NAME = 'DebugLog';
 const PRESET_STORAGE_KEY = 'REALUNIVERSE_PRESETS_V1';
+const AGENT_DEBUG_LOG_HEADERS = [
+  'Timestamp',
+  'Thread ID',
+  'Phase',
+  'Event Type',
+  'Label',
+  'User Prompt',
+  'Intent Type',
+  'Selected Model',
+  'Reasoning',
+  'Retry Count',
+  'Plan Summary',
+  'Actions',
+  'Tool Name',
+  'Tool Input',
+  'Tool Result',
+  'Final Message',
+  'Error',
+  'Sheet Name',
+  'Sheet Rows',
+  'Trace JSON'
+];
 
 /* ------------------ DYNAMIC PRESET FUNCTIONS ------------------ */
 
@@ -982,23 +1004,45 @@ function processRealUniverseAgentStep(agentState) {
 
   if (phase === 'bootstrap') {
     const context = getActiveSheetContext();
-    return {
+    const intentType = isAgentOperationalTask(state.userPrompt || '') ? 'operational' : 'ask';
+    const nextState = {
+      threadId: state.threadId || '',
+      phase: 'plan',
+      userPrompt: state.userPrompt || '',
+      memorySummary: state.memorySummary || '',
+      selectedModel: agentConfig.model,
+      reasoningEffort: agentConfig.reasoning,
+      planRetryCount: 0,
+      context: context,
+      intentType: intentType,
+      executionLog: []
+    };
+    const response = {
       done: false,
       events: [
-        { type: 'status', label: 'Reading active sheet' },
-        { type: 'status', label: 'Detected ' + context.columnCount + ' columns in ' + context.sheetName }
+        createAgentTraceEvent(nextState, 'status', 'Reading active sheet', {
+          toolName: 'getActiveSheetContext',
+          toolResult: {
+            sheetName: context.sheetName,
+            rowCount: context.rowCount,
+            columnCount: context.columnCount
+          }
+        }),
+        createAgentTraceEvent(nextState, 'status', 'Detected ' + context.columnCount + ' columns in ' + context.sheetName, {
+          toolName: 'getActiveSheetContext',
+          toolResult: {
+            columns: context.columns.map(column => ({
+              letter: column.letter,
+              header: column.header || '',
+              label: column.label
+            }))
+          }
+        })
       ],
-      nextState: {
-        phase: 'plan',
-        userPrompt: state.userPrompt || '',
-        memorySummary: state.memorySummary || '',
-        selectedModel: agentConfig.model,
-        reasoningEffort: agentConfig.reasoning,
-        planRetryCount: 0,
-        context: context,
-        executionLog: []
-      }
+      nextState: nextState
     };
+    logAgentDebugTrace(response.events, response, nextState);
+    return response;
   }
 
   if (phase === 'plan') {
@@ -1008,54 +1052,82 @@ function processRealUniverseAgentStep(agentState) {
       strictExecution: isOperationalTask && retryCount > 0
     });
     const events = [
-      { type: 'status', label: 'Planning next steps' },
-      { type: 'status', label: plan.summary || 'Plan ready' }
+      createAgentTraceEvent(state, 'status', 'Planning next steps', {
+        intentType: isOperationalTask ? 'operational' : 'ask',
+        retryCount: retryCount
+      }),
+      createAgentTraceEvent(state, 'status', plan.summary || 'Plan ready', {
+        intentType: isOperationalTask ? 'operational' : 'ask',
+        planSummary: plan.summary || 'Plan ready',
+        actions: plan.actions
+      })
     ];
 
     if (isOperationalTask && !plan.actions.length) {
       if (retryCount < 1) {
-        return {
-          done: false,
-          events: events.concat({ type: 'status', label: 'Refining executable steps' }),
-          nextState: {
-            ...state,
-            phase: 'plan',
-            planRetryCount: retryCount + 1
-          }
+        const nextState = {
+          ...state,
+          phase: 'plan',
+          intentType: 'operational',
+          planRetryCount: retryCount + 1
         };
+        const response = {
+          done: false,
+          events: events.concat(createAgentTraceEvent(nextState, 'status', 'Refining executable steps', {
+            intentType: 'operational',
+            retryCount: retryCount + 1,
+            error: 'Planner returned no executable actions for an operational task'
+          })),
+          nextState: nextState
+        };
+        logAgentDebugTrace(response.events, response, nextState);
+        return response;
       }
 
-      return {
+      const response = {
         done: true,
-        events: events.concat({ type: 'error', label: 'Could not build executable steps' }),
+        events: events.concat(createAgentTraceEvent(state, 'error', 'Could not build executable steps', {
+          intentType: 'operational',
+          retryCount: retryCount,
+          error: 'Planner returned no executable actions after strict retry',
+          actions: []
+        })),
         finalMessage: 'ผมเข้าใจว่าเป็นงานที่ต้องลงมือทำกับชีต แต่ยังสร้างขั้นตอนที่รันได้ไม่สำเร็จ กรุณาระบุคอลัมน์ต้นทางหรือปลายทางให้ชัดขึ้นอีกครั้งครับ',
         nextState: null
       };
+      logAgentDebugTrace(response.events, response, state);
+      return response;
     }
 
     if (!plan.actions.length) {
-      return {
+      const response = {
         done: true,
         events: events,
         finalMessage: plan.finalResponse || plan.summary || 'Done.',
         nextState: null
       };
+      logAgentDebugTrace(response.events, response, state);
+      return response;
     }
 
-    return {
+    const nextState = {
+      ...state,
+      phase: 'execute',
+      intentType: isOperationalTask ? 'operational' : 'ask',
+      plan: plan,
+      planRetryCount: 0,
+      currentActionIndex: 0,
+      currentBatchIndex: 0,
+      actionRuntime: null,
+      executionLog: state.executionLog || []
+    };
+    const response = {
       done: false,
       events: events,
-      nextState: {
-        ...state,
-        phase: 'execute',
-        plan: plan,
-        planRetryCount: 0,
-        currentActionIndex: 0,
-        currentBatchIndex: 0,
-        actionRuntime: null,
-        executionLog: state.executionLog || []
-      }
+      nextState: nextState
     };
+    logAgentDebugTrace(response.events, response, nextState);
+    return response;
   }
 
   if (phase === 'execute') {
@@ -1067,12 +1139,16 @@ function processRealUniverseAgentStep(agentState) {
       const finalParts = executionLog.length > 0 ? [executionLog.join('\n')] : [];
       if (finalParts.length === 0 && plan.finalResponse) finalParts.push(plan.finalResponse);
 
-      return {
+      const response = {
         done: true,
-        events: [{ type: 'status', label: 'Agent run complete' }],
+        events: [createAgentTraceEvent(state, 'status', 'Agent run complete', {
+          finalMessage: finalParts.join('\n\n').trim() || 'Done.'
+        })],
         finalMessage: finalParts.join('\n\n').trim() || 'Done.',
         nextState: null
       };
+      logAgentDebugTrace(response.events, response, state);
+      return response;
     }
 
     if (action.type === 'insert_column') {
@@ -1082,20 +1158,32 @@ function processRealUniverseAgentStep(agentState) {
         'Inserted column ' + result.columnLetter + ' with header "' + (result.headerName || result.columnLetter) + '".'
       );
 
-      return {
+      const nextState = advanceAgentState(state, {
+        context: updatedContext,
+        currentActionIndex: state.currentActionIndex + 1,
+        currentBatchIndex: 0,
+        actionRuntime: null,
+        executionLog: executionLog
+      });
+      const response = {
         done: false,
         events: [
-          { type: 'tool_call', label: 'Inserting column ' + result.columnLetter },
-          { type: 'tool_result', label: 'Created header "' + (result.headerName || result.columnLetter) + '"' }
+          createAgentTraceEvent(state, 'tool_call', 'Inserting column ' + result.columnLetter, {
+            toolName: 'insertColumnAt',
+            toolInput: {
+              position: action.position,
+              headerName: action.headerName
+            }
+          }),
+          createAgentTraceEvent(state, 'tool_result', 'Created header "' + (result.headerName || result.columnLetter) + '"', {
+            toolName: 'insertColumnAt',
+            toolResult: result
+          })
         ],
-        nextState: advanceAgentState(state, {
-          context: updatedContext,
-          currentActionIndex: state.currentActionIndex + 1,
-          currentBatchIndex: 0,
-          actionRuntime: null,
-          executionLog: executionLog
-        })
+        nextState: nextState
       };
+      logAgentDebugTrace(response.events, response, nextState);
+      return response;
     }
 
     if (action.type === 'analyze_fill') {
@@ -1116,15 +1204,24 @@ function processRealUniverseAgentStep(agentState) {
       }
 
       if (runtime.totalRows === 0) {
-        return {
+        const nextState = advanceAgentState(state, {
+          currentActionIndex: state.currentActionIndex + 1,
+          currentBatchIndex: 0,
+          actionRuntime: null
+        });
+        const response = {
           done: false,
-          events: [{ type: 'status', label: 'No data rows found in the active sheet' }],
-          nextState: advanceAgentState(state, {
-            currentActionIndex: state.currentActionIndex + 1,
-            currentBatchIndex: 0,
-            actionRuntime: null
-          })
+          events: [createAgentTraceEvent(state, 'status', 'No data rows found in the active sheet', {
+            toolName: 'analyze_fill',
+            toolInput: {
+              sourceColumn: action.sourceColumn,
+              targetColumn: action.targetColumn
+            }
+          })],
+          nextState: nextState
         };
+        logAgentDebugTrace(response.events, response, nextState);
+        return response;
       }
 
       const batchIndex = state.currentBatchIndex || 0;
@@ -1152,9 +1249,25 @@ function processRealUniverseAgentStep(agentState) {
       const executionLog = state.executionLog || [];
       const resolutionEvents = batchIndex === 0
         ? [
-            { type: 'status', label: 'Resolved source column ' + runtime.sourceColumn.letter },
-            { type: 'status', label: 'Resolved target column ' + runtime.targetColumn.letter },
-            { type: 'status', label: 'Rows to process: ' + runtime.totalRows }
+            createAgentTraceEvent(state, 'status', 'Resolved source column ' + runtime.sourceColumn.letter, {
+              toolName: 'resolveColumnReference',
+              toolResult: runtime.sourceColumn
+            }),
+            createAgentTraceEvent(state, 'status', 'Resolved target column ' + runtime.targetColumn.letter, {
+              toolName: 'resolveColumnReference',
+              toolResult: runtime.targetColumn
+            }),
+            createAgentTraceEvent(state, 'status', 'Rows to process: ' + runtime.totalRows, {
+              toolName: 'analyze_fill',
+              toolInput: {
+                sourceColumn: runtime.sourceColumn.letter,
+                targetColumn: runtime.targetColumn.letter
+              },
+              toolResult: {
+                totalRows: runtime.totalRows,
+                totalBatches: runtime.totalBatches
+              }
+            })
           ]
         : [];
       if (nextBatchIndex >= runtime.totalBatches) {
@@ -1162,41 +1275,73 @@ function processRealUniverseAgentStep(agentState) {
           'Wrote ' + runtime.totalRows + ' results into column ' + runtime.targetColumn.letter + '.'
         );
 
-        return {
+        const nextState = advanceAgentState(state, {
+          currentActionIndex: state.currentActionIndex + 1,
+          currentBatchIndex: 0,
+          actionRuntime: null,
+          executionLog: completedLog
+        });
+        const response = {
           done: false,
           events: resolutionEvents.concat([
-            { type: 'tool_call', label: 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter },
-            { type: 'tool_result', label: 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow }
+            createAgentTraceEvent(state, 'tool_call', 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter, {
+              toolName: 'analyze_fill',
+              toolInput: {
+                sourceColumn: runtime.sourceColumn.letter,
+                targetColumn: runtime.targetColumn.letter,
+                startRow: startRow,
+                batchRowCount: batchRowCount
+              }
+            }),
+            createAgentTraceEvent(state, 'tool_result', 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow, {
+              toolName: 'writeColumnValues',
+              toolResult: writeResult
+            })
           ]),
-          nextState: advanceAgentState(state, {
-            currentActionIndex: state.currentActionIndex + 1,
-            currentBatchIndex: 0,
-            actionRuntime: null,
-            executionLog: completedLog
-          })
+          nextState: nextState
         };
+        logAgentDebugTrace(response.events, response, nextState);
+        return response;
       }
 
-      return {
+      const nextState = advanceAgentState(state, {
+        currentBatchIndex: nextBatchIndex,
+        actionRuntime: runtime
+      });
+      const response = {
         done: false,
         events: resolutionEvents.concat([
-          { type: 'tool_call', label: 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter },
-          { type: 'tool_result', label: 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow }
+          createAgentTraceEvent(state, 'tool_call', 'Analyzing rows ' + startRow + '-' + writeResult.endRow + ' from column ' + runtime.sourceColumn.letter, {
+            toolName: 'analyze_fill',
+            toolInput: {
+              sourceColumn: runtime.sourceColumn.letter,
+              targetColumn: runtime.targetColumn.letter,
+              startRow: startRow,
+              batchRowCount: batchRowCount
+            }
+          }),
+          createAgentTraceEvent(state, 'tool_result', 'Wrote results to ' + runtime.targetColumn.letter + startRow + ':' + runtime.targetColumn.letter + writeResult.endRow, {
+            toolName: 'writeColumnValues',
+            toolResult: writeResult
+          })
         ]),
-        nextState: advanceAgentState(state, {
-          currentBatchIndex: nextBatchIndex,
-          actionRuntime: runtime
-        })
+        nextState: nextState
       };
+      logAgentDebugTrace(response.events, response, nextState);
+      return response;
     }
   }
 
-  return {
+  const response = {
     done: true,
-    events: [{ type: 'error', label: 'Unsupported agent state' }],
+    events: [createAgentTraceEvent(state, 'error', 'Unsupported agent state', {
+      error: 'Unsupported agent state'
+    })],
     finalMessage: 'Agent could not continue this task.',
     nextState: null
   };
+  logAgentDebugTrace(response.events, response, state);
+  return response;
 }
 
 function processRealUniverseAI(prompt, preset = 'action_preset_2', temperature = 0, mode = 'action', turboMode = false, selectedModel = null, reasoningEffort = null) {
@@ -2207,6 +2352,147 @@ function saveRealUniverseHistory(question, answer) {
   }
 }
 
+function getOrCreateDebugLogSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(DEBUG_LOG_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(DEBUG_LOG_SHEET_NAME);
+    sheet.getRange(1, 1, 1, AGENT_DEBUG_LOG_HEADERS.length).setValues([AGENT_DEBUG_LOG_HEADERS]).setFontWeight('bold');
+  }
+
+  const headerValues = sheet.getRange(1, 1, 1, AGENT_DEBUG_LOG_HEADERS.length).getValues()[0];
+  const headersMatch = AGENT_DEBUG_LOG_HEADERS.every((header, index) => String(headerValues[index] || '') === header);
+  if (!headersMatch) {
+    sheet.getRange(1, 1, 1, AGENT_DEBUG_LOG_HEADERS.length).setValues([AGENT_DEBUG_LOG_HEADERS]).setFontWeight('bold');
+  }
+
+  return sheet;
+}
+
+function stringifyAgentTraceValue(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    return String(value);
+  }
+}
+
+function createAgentTrace(state, overrides) {
+  const safeState = state || {};
+  return {
+    threadId: safeState.threadId || '',
+    phase: safeState.phase || 'bootstrap',
+    userPrompt: safeState.userPrompt || '',
+    intentType: safeState.intentType || '',
+    selectedModel: safeState.selectedModel || '',
+    reasoningEffort: safeState.reasoningEffort || '',
+    retryCount: Number(safeState.planRetryCount || 0),
+    sheetName: safeState.context && safeState.context.sheetName ? safeState.context.sheetName : '',
+    sheetRows: safeState.context && typeof safeState.context.rowCount !== 'undefined' ? safeState.context.rowCount : '',
+    timestamp: new Date().toISOString(),
+    ...(overrides || {})
+  };
+}
+
+function createAgentTraceEvent(state, type, label, traceOverrides) {
+  return {
+    type: type,
+    label: label,
+    trace: createAgentTrace(state, {
+      eventType: type,
+      label: label,
+      ...(traceOverrides || {})
+    })
+  };
+}
+
+function buildAgentDebugLogRows(events, response, state) {
+  const rows = [];
+  const safeEvents = Array.isArray(events) ? events : [];
+
+  safeEvents.forEach(event => {
+    const trace = event && event.trace ? event.trace : createAgentTrace(state, {
+      eventType: event && event.type ? event.type : 'status',
+      label: event && event.label ? event.label : ''
+    });
+
+    rows.push([
+      new Date(),
+      trace.threadId || '',
+      trace.phase || '',
+      trace.eventType || '',
+      trace.label || '',
+      trace.userPrompt || '',
+      trace.intentType || '',
+      trace.selectedModel || '',
+      trace.reasoningEffort || '',
+      trace.retryCount === '' ? '' : trace.retryCount,
+      trace.planSummary || '',
+      stringifyAgentTraceValue(trace.actions || ''),
+      trace.toolName || '',
+      stringifyAgentTraceValue(trace.toolInput || ''),
+      stringifyAgentTraceValue(trace.toolResult || ''),
+      trace.finalMessage || '',
+      trace.error || '',
+      trace.sheetName || '',
+      trace.sheetRows === '' ? '' : trace.sheetRows,
+      stringifyAgentTraceValue(trace)
+    ]);
+  });
+
+  if (response && response.done && response.finalMessage) {
+    const finalTrace = createAgentTrace(state, {
+      eventType: 'final_message',
+      label: 'Final message',
+      finalMessage: response.finalMessage
+    });
+
+    rows.push([
+      new Date(),
+      finalTrace.threadId || '',
+      finalTrace.phase || '',
+      finalTrace.eventType || '',
+      finalTrace.label || '',
+      finalTrace.userPrompt || '',
+      finalTrace.intentType || '',
+      finalTrace.selectedModel || '',
+      finalTrace.reasoningEffort || '',
+      finalTrace.retryCount === '' ? '' : finalTrace.retryCount,
+      finalTrace.planSummary || '',
+      stringifyAgentTraceValue(finalTrace.actions || ''),
+      finalTrace.toolName || '',
+      stringifyAgentTraceValue(finalTrace.toolInput || ''),
+      stringifyAgentTraceValue(finalTrace.toolResult || ''),
+      finalTrace.finalMessage || '',
+      finalTrace.error || '',
+      finalTrace.sheetName || '',
+      finalTrace.sheetRows === '' ? '' : finalTrace.sheetRows,
+      stringifyAgentTraceValue(finalTrace)
+    ]);
+  }
+
+  return rows;
+}
+
+function appendAgentDebugLogRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  try {
+    const sheet = getOrCreateDebugLogSheet();
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, AGENT_DEBUG_LOG_HEADERS.length).setValues(rows);
+  } catch (e) {
+    Logger.log('Error saving agent debug log: ' + e.message);
+  }
+}
+
+function logAgentDebugTrace(events, response, state) {
+  appendAgentDebugLogRows(buildAgentDebugLogRows(events, response, state));
+}
+
 function clearRealUniverseHistory() {
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert('Confirm Clear', 'Clear all chat history?', ui.ButtonSet.YES_NO);
@@ -2364,6 +2650,26 @@ body {
     padding: 7px 10px;
     font-size: 10px;
     line-height: 1.4;
+}
+.agent-trace-details {
+    margin-top: 6px;
+    border-top: 1px dashed rgba(148, 163, 184, 0.35);
+    padding-top: 6px;
+}
+.agent-trace-summary {
+    cursor: pointer;
+    color: #64748b;
+    font-size: 9px;
+    font-weight: 600;
+    user-select: none;
+}
+.agent-trace-pre {
+    margin-top: 6px;
+    font-size: 9px;
+    line-height: 1.45;
+    color: #475569;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 .message-content strong {
     font-weight: 600;
@@ -3702,7 +4008,36 @@ function callServer(functionName, ...args) {
    });
 }
 
-function addAgentEventMessage(label) {
+function formatAgentTraceForDisplay(trace) {
+   if (!trace) return '';
+
+   const displayTrace = {
+       phase: trace.phase || '',
+       eventType: trace.eventType || '',
+       userPrompt: trace.userPrompt || '',
+       intentType: trace.intentType || '',
+       selectedModel: trace.selectedModel || '',
+       reasoningEffort: trace.reasoningEffort || '',
+       retryCount: typeof trace.retryCount === 'number' ? trace.retryCount : '',
+       planSummary: trace.planSummary || '',
+       actions: trace.actions || '',
+       toolName: trace.toolName || '',
+       toolInput: trace.toolInput || '',
+       toolResult: trace.toolResult || '',
+       finalMessage: trace.finalMessage || '',
+       error: trace.error || '',
+       sheetName: trace.sheetName || '',
+       sheetRows: typeof trace.sheetRows !== 'undefined' ? trace.sheetRows : ''
+   };
+
+   return JSON.stringify(displayTrace, null, 2);
+}
+
+function addAgentEventMessage(eventOrLabel) {
+   const event = typeof eventOrLabel === 'object' && eventOrLabel !== null
+       ? eventOrLabel
+       : { label: String(eventOrLabel || '') };
+   const label = event.label || '';
    const messages = document.getElementById('messages');
    const emptyState = messages.querySelector('.empty-state');
    if (emptyState) emptyState.remove();
@@ -3713,6 +4048,23 @@ function addAgentEventMessage(label) {
    const content = document.createElement('div');
    content.className = 'message-content';
    content.textContent = label;
+
+   if (event.trace) {
+       const details = document.createElement('details');
+       details.className = 'agent-trace-details';
+
+       const summary = document.createElement('summary');
+       summary.className = 'agent-trace-summary';
+       summary.textContent = 'Trace';
+
+       const pre = document.createElement('pre');
+       pre.className = 'agent-trace-pre';
+       pre.textContent = formatAgentTraceForDisplay(event.trace);
+
+       details.appendChild(summary);
+       details.appendChild(pre);
+       content.appendChild(details);
+   }
 
    messageDiv.appendChild(content);
    messages.appendChild(messageDiv);
@@ -3725,7 +4077,7 @@ async function playAgentEvents(threadId, events) {
    for (const event of events) {
        const label = event && event.label ? event.label : '';
        if (label) {
-           addAgentEventMessage(label);
+           addAgentEventMessage(event);
        }
        await saveAgentEvents(threadId, [event]);
        await trimAgentEvents(threadId);
@@ -3770,6 +4122,7 @@ async function sendAgentMessage(question) {
    await saveAgentTurn(thread.id, 'user', 'prompt', question);
 
    const initialState = {
+       threadId: thread.id,
        phase: 'bootstrap',
        userPrompt: question,
        memorySummary: memorySummary,
