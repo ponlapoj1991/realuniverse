@@ -43,6 +43,9 @@ function createAppsScriptSandbox() {
     getLastRow() {
       return 1;
     },
+    getMaxColumns() {
+      return 26;
+    },
     getRange() {
       return fakeRange;
     },
@@ -353,11 +356,137 @@ function testAgentClientCapabilityFlow(server) {
   assert(nodes.get('statusText').textContent === 'Agent • GPT-5.4 • Extra High', 'agent status should show selected model and reasoning');
 }
 
+function testAgentOperationalPlanRetriesBeforeCompleting(server) {
+  let planCallCount = 0;
+  server.buildAgentPlan = () => {
+    planCallCount += 1;
+    return { summary: 'Preparing sentiment write', finalResponse: 'I will write results to column C.', actions: [] };
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'วิเคราะห์ content แล้วเขียน sentiment ลงคอลัมน์ C',
+    executionLog: [],
+    planRetryCount: 0,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(planCallCount === 1, 'plan should run once per step invocation');
+  assert(result.done === false, 'operational task should retry instead of completing immediately');
+  assert(result.nextState && result.nextState.phase === 'plan', 'retry should stay in planning phase');
+  assert(result.nextState.planRetryCount === 1, 'retry count should increment after first empty action plan');
+  assert((result.events || []).some(event => event.label === 'Refining executable steps'), 'retry path should surface refining status');
+}
+
+function testAgentOperationalPlanFailsClearlyAfterRetry(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'Preparing sentiment write',
+    finalResponse: 'I will write results to column C.',
+    actions: []
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'วิเคราะห์ content แล้วเขียน sentiment ลงคอลัมน์ C',
+    executionLog: [],
+    planRetryCount: 1,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(result.done === true, 'operational task should stop after strict re-plan fails');
+  assert(String(result.finalMessage || '').includes('ยังสร้างขั้นตอนที่รันได้ไม่สำเร็จ'), 'failure message should explain execution plan could not be built');
+  assert((result.events || []).some(event => event.type === 'error'), 'failure path should emit an error event');
+}
+
+function testAgentOperationalPlanAdvancesToExecute(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'Ready to analyze and write',
+    finalResponse: 'I will write results to column C.',
+    actions: [
+      { type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C', instruction: 'sentiment' }
+    ]
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'Analyze column A and write sentiment to column C',
+    executionLog: [],
+    planRetryCount: 1,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(result.done === false, 'plan with executable actions should continue');
+  assert(result.nextState && result.nextState.phase === 'execute', 'plan with actions should advance to execute');
+  assert(result.nextState.planRetryCount === 0, 'retry counter should reset after successful executable plan');
+}
+
+function testAgentExecuteEmitsResolutionEvents(server) {
+  server.resolveColumnReference = ref => ({
+    index: ref === 'A' ? 1 : 3,
+    letter: ref,
+    header: ref === 'A' ? 'Content' : 'Sentiment',
+    label: ref
+  });
+  server.analyzeAgentBatchValues = () => ['positive', 'negative'];
+  server.writeColumnValues = (_columnRef, startRow, values) => ({
+    columnIndex: 3,
+    columnLetter: 'C',
+    rowsWritten: values.length,
+    startRow: startRow,
+    endRow: startRow + values.length - 1
+  });
+  server.SpreadsheetApp = {
+    getActiveSheet() {
+      return {
+        getLastRow() {
+          return 3;
+        },
+        getRange() {
+          return {
+            getDisplayValues() {
+              return [['good'], ['bad']];
+            }
+          };
+        }
+      };
+    },
+    flush() {}
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'execute',
+    plan: {
+      actions: [
+        { type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C', instruction: 'sentiment' }
+      ]
+    },
+    currentActionIndex: 0,
+    currentBatchIndex: 0,
+    actionRuntime: null,
+    executionLog: [],
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  const labels = (result.events || []).map(event => event.label);
+  assert(labels.includes('Resolved source column A'), 'execute path should report resolved source column');
+  assert(labels.includes('Resolved target column C'), 'execute path should report resolved target column');
+  assert(labels.includes('Rows to process: 2'), 'execute path should report row count before writing');
+  assert(labels.some(label => label.includes('Wrote results to C2:C3')), 'execute path should report written range');
+}
+
 const cases = [
   ['responses body uses text.format', testResponsesBodyUsesTextFormat],
   ['chat body keeps response_format', testChatBodyKeepsResponseFormat],
   ['agent model config includes agent support', testAgentModelUiConfig],
-  ['agent client exposes model and reasoning flow', testAgentClientCapabilityFlow]
+  ['agent client exposes model and reasoning flow', testAgentClientCapabilityFlow],
+  ['agent operational plan retries before completing', testAgentOperationalPlanRetriesBeforeCompleting],
+  ['agent operational plan fails clearly after retry', testAgentOperationalPlanFailsClearlyAfterRetry],
+  ['agent operational plan advances to execute', testAgentOperationalPlanAdvancesToExecute],
+  ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents]
 ];
 
 try {
