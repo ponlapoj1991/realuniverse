@@ -46,21 +46,21 @@ const MODEL_REGISTRY = {
     apiType: 'chat',
     supportsTemperature: true,
     supportsReasoning: false,
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-4.1-mini': {
     label: 'GPT-4.1 Mini',
     apiType: 'chat',
     supportsTemperature: true,
     supportsReasoning: false,
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-4.1-nano': {
     label: 'GPT-4.1 Nano',
     apiType: 'chat',
     supportsTemperature: true,
     supportsReasoning: false,
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5': {
     label: 'GPT-5',
@@ -69,7 +69,7 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['minimal', 'low', 'medium', 'high'],
     defaultReasoning: 'medium',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5-mini': {
     label: 'GPT-5 Mini',
@@ -78,7 +78,7 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['minimal', 'low', 'medium', 'high'],
     defaultReasoning: 'medium',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5-nano': {
     label: 'GPT-5 Nano',
@@ -87,7 +87,7 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['minimal', 'low', 'medium', 'high'],
     defaultReasoning: 'medium',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5.2': {
     label: 'GPT-5.2',
@@ -96,7 +96,7 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['none', 'low', 'medium', 'high'],
     defaultReasoning: 'none',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5.4': {
     label: 'GPT-5.4',
@@ -105,7 +105,7 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['none', 'low', 'medium', 'high', 'xhigh'],
     defaultReasoning: 'none',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5.4-mini': {
     label: 'GPT-5.4 Mini',
@@ -114,7 +114,7 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['none', 'low', 'medium', 'high', 'xhigh'],
     defaultReasoning: 'none',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   },
   'gpt-5.4-nano': {
     label: 'GPT-5.4 Nano',
@@ -123,13 +123,14 @@ const MODEL_REGISTRY = {
     supportsReasoning: true,
     reasoningOptions: ['none', 'low', 'medium', 'high', 'xhigh'],
     defaultReasoning: 'none',
-    supportedModes: ['action', 'array']
+    supportedModes: ['action', 'array', 'agent']
   }
 };
 
 const TEXT_MODE_DEFAULT_MODEL = {
   action: MODEL_CONFIG.action_standard.model,
-  array: MODEL_CONFIG.array.model
+  array: MODEL_CONFIG.array.model,
+  agent: AGENT_MODEL_CONFIG.model
 };
 
 const TEXT_MODE_MODEL_ORDER = [
@@ -589,7 +590,7 @@ function setupRealUniverseApiKey() {
 /* ------------------ CORE AI PROCESSING FUNCTIONS ------------------ */
 
 function isTextMode(mode) {
-  return mode === 'action' || mode === 'array';
+  return mode === 'action' || mode === 'array' || mode === 'agent';
 }
 
 function getModelRegistryEntry(modelName) {
@@ -660,6 +661,18 @@ function resolveModelConfigForMode(mode, turboMode, selectedModel) {
   }
 
   return { ...MODEL_CONFIG.image };
+}
+
+function resolveAgentModelConfig(selectedModel, reasoningEffort) {
+  const resolvedModel = resolveSelectedModelForMode('agent', selectedModel) || AGENT_MODEL_CONFIG.model;
+  return {
+    model: resolvedModel,
+    reasoning: normalizeReasoningEffortForModel(resolvedModel, reasoningEffort || AGENT_MODEL_CONFIG.reasoning),
+    planningMaxTokens: AGENT_MODEL_CONFIG.planningMaxTokens,
+    executionMaxTokens: AGENT_MODEL_CONFIG.executionMaxTokens,
+    batchSize: AGENT_MODEL_CONFIG.batchSize,
+    maxSampleRows: AGENT_MODEL_CONFIG.maxSampleRows
+  };
 }
 
 function getRealUniverseModelUiConfig() {
@@ -865,15 +878,16 @@ function buildAgentPlanningPrompt(userPrompt, agentState) {
 }
 
 function buildAgentPlan(userPrompt, agentState) {
+  const agentConfig = resolveAgentModelConfig(agentState && agentState.selectedModel, agentState && agentState.reasoningEffort);
   const payload = {
-    model: AGENT_MODEL_CONFIG.model,
+    model: agentConfig.model,
     messages: [
       { role: 'system', content: AGENT_MODE_SYSTEM_PROMPT },
       { role: 'user', content: buildAgentPlanningPrompt(userPrompt, agentState) }
     ],
-    max_tokens: AGENT_MODEL_CONFIG.planningMaxTokens,
+    max_tokens: agentConfig.planningMaxTokens,
     response_format: { type: 'json_object' },
-    reasoning: { effort: AGENT_MODEL_CONFIG.reasoning }
+    reasoning: agentConfig.reasoning ? { effort: agentConfig.reasoning } : null
   };
 
   const rawResult = makeRealUniverseApiCall(payload);
@@ -897,8 +911,9 @@ function buildAgentPlan(userPrompt, agentState) {
 }
 
 function analyzeAgentBatchValues(action, batchValues) {
+  const agentConfig = resolveAgentModelConfig(action.selectedModel, action.reasoningEffort);
   const payload = {
-    model: AGENT_MODEL_CONFIG.model,
+    model: agentConfig.model,
     messages: [
       {
         role: 'system',
@@ -913,9 +928,9 @@ function analyzeAgentBatchValues(action, batchValues) {
         }, null, 2)
       }
     ],
-    max_tokens: AGENT_MODEL_CONFIG.executionMaxTokens,
+    max_tokens: agentConfig.executionMaxTokens,
     response_format: { type: 'json_object' },
-    reasoning: { effort: AGENT_MODEL_CONFIG.reasoning }
+    reasoning: agentConfig.reasoning ? { effort: agentConfig.reasoning } : null
   };
 
   const rawResult = makeRealUniverseApiCall(payload);
@@ -938,6 +953,7 @@ function advanceAgentState(agentState, nextFields) {
 function processRealUniverseAgentStep(agentState) {
   const state = agentState || {};
   const phase = state.phase || 'bootstrap';
+  const agentConfig = resolveAgentModelConfig(state.selectedModel, state.reasoningEffort);
 
   if (phase === 'bootstrap') {
     const context = getActiveSheetContext();
@@ -951,6 +967,8 @@ function processRealUniverseAgentStep(agentState) {
         phase: 'plan',
         userPrompt: state.userPrompt || '',
         memorySummary: state.memorySummary || '',
+        selectedModel: agentConfig.model,
+        reasoningEffort: agentConfig.reasoning,
         context: context,
         executionLog: []
       }
@@ -1036,7 +1054,7 @@ function processRealUniverseAgentStep(agentState) {
         const targetColumn = resolveColumnReference(action.targetColumn);
         const lastRow = SpreadsheetApp.getActiveSheet().getLastRow();
         const totalRows = Math.max(lastRow - 1, 0);
-        const totalBatches = totalRows === 0 ? 0 : Math.ceil(totalRows / AGENT_MODEL_CONFIG.batchSize);
+        const totalBatches = totalRows === 0 ? 0 : Math.ceil(totalRows / agentConfig.batchSize);
 
         runtime = {
           sourceColumn: sourceColumn,
@@ -1059,9 +1077,9 @@ function processRealUniverseAgentStep(agentState) {
       }
 
       const batchIndex = state.currentBatchIndex || 0;
-      const startRow = 2 + (batchIndex * AGENT_MODEL_CONFIG.batchSize);
-      const remainingRows = runtime.totalRows - (batchIndex * AGENT_MODEL_CONFIG.batchSize);
-      const batchRowCount = Math.min(AGENT_MODEL_CONFIG.batchSize, remainingRows);
+      const startRow = 2 + (batchIndex * agentConfig.batchSize);
+      const remainingRows = runtime.totalRows - (batchIndex * agentConfig.batchSize);
+      const batchRowCount = Math.min(agentConfig.batchSize, remainingRows);
       const sheet = SpreadsheetApp.getActiveSheet();
       const batchValues = sheet
         .getRange(startRow, runtime.sourceColumn.index, batchRowCount, 1)
@@ -1071,7 +1089,11 @@ function processRealUniverseAgentStep(agentState) {
           text: cleanCellData(row[0] || '')
         }));
 
-      const analyzedValues = analyzeAgentBatchValues(action, batchValues);
+      const analyzedValues = analyzeAgentBatchValues({
+        ...action,
+        selectedModel: agentConfig.model,
+        reasoningEffort: agentConfig.reasoning
+      }, batchValues);
       const writeResult = writeColumnValues(runtime.targetColumn.letter, startRow, analyzedValues);
       SpreadsheetApp.flush();
 
@@ -1812,7 +1834,7 @@ function getApiTypeForModel(modelName) {
  * NOTE: Responses API — ไม่ส่ง temperature (บางรุ่นไม่รองรับ)
  */
 function buildRequestBodyForApi(apiType, payload) {
-  const { model, messages, temperature, max_tokens, response_format, reasoning } = payload || {};
+  const { model, messages, temperature, max_tokens, response_format, reasoning, text } = payload || {};
   if (apiType === 'responses') {
     const body = {
       model: model,
@@ -1822,8 +1844,14 @@ function buildRequestBodyForApi(apiType, payload) {
     if (typeof max_tokens !== 'undefined') {
       body.max_output_tokens = max_tokens; // map เฉพาะไปยังชื่อที่รองรับ
     }
+    if (text) {
+      body.text = { ...text };
+    }
     if (response_format) {
-      body.response_format = response_format;
+      body.text = {
+        ...(body.text || {}),
+        format: response_format
+      };
     }
     if (reasoning) {
       body.reasoning = reasoning;
@@ -3233,11 +3261,13 @@ let modelUiConfig = {
 };
 let currentModelSelections = {
    action: 'gpt-4.1',
-   array: 'gpt-4.1'
+   array: 'gpt-4.1',
+   agent: 'gpt-5.4'
 };
 let currentReasoningSelections = {
    action: null,
-   array: null
+   array: null,
+   agent: null
 };
 let activeAgentThreadId = null;
 let currentAgentState = null;
@@ -3674,6 +3704,8 @@ async function sendAgentMessage(question) {
    const context = await callServer('getActiveSheetContext');
    const thread = await ensureAgentThread(context);
    const memorySummary = await getAgentPlanningMemory(thread.id);
+   const selectedModel = getSelectedModelForMode('agent');
+   const selectedReasoning = getReasoningEffortForMode('agent');
 
    hideTypingIndicator();
 
@@ -3682,7 +3714,9 @@ async function sendAgentMessage(question) {
    const initialState = {
        phase: 'bootstrap',
        userPrompt: question,
-       memorySummary: memorySummary
+       memorySummary: memorySummary,
+       selectedModel: selectedModel,
+       reasoningEffort: selectedReasoning
    };
 
    await upsertAgentMemory(thread.id, 'task_state', initialState);
@@ -3690,7 +3724,7 @@ async function sendAgentMessage(question) {
 }
 
 function isTextModeClient(mode) {
-   return mode === 'action' || mode === 'array';
+   return mode === 'action' || mode === 'array' || mode === 'agent';
 }
 
 function getModelDefinitionForClient(modelId) {
@@ -3873,8 +3907,10 @@ function loadModelUiConfig(callback) {
                modelUiConfig = config;
                currentModelSelections.action = getSelectedModelForMode('action');
                currentModelSelections.array = getSelectedModelForMode('array');
+               currentModelSelections.agent = getSelectedModelForMode('agent');
                currentReasoningSelections.action = getReasoningEffortForMode('action');
                currentReasoningSelections.array = getReasoningEffortForMode('array');
+               currentReasoningSelections.agent = getReasoningEffortForMode('agent');
            }
 
            renderModelOptions();
@@ -3982,17 +4018,12 @@ function updateStatusText() {
    const mode = document.querySelector('#popupModeOptions .popup-option.active')?.textContent || 'Answer';
    const preset = document.querySelector('#popupPresetOptions .popup-option.active')?.textContent || 'No preset';
 
-   if (currentMode === 'agent') {
-       document.getElementById('statusText').textContent = 'Agent • GPT-5.4 • Live';
-       return;
-   }
-
    const capability = getCapabilityDescriptor();
    const detailLabel = capability.type === 'reasoning'
        ? getReasoningLabel(getCurrentReasoningEffort() || '')
        : getTemperatureLabel(currentTemperature);
 
-   const statusParts = [mode, preset];
+   const statusParts = currentMode === 'agent' ? ['Agent'] : [mode, preset];
    if (isTextModeClient(currentMode)) {
        statusParts.push(getCurrentModelDisplayLabel() || getDefaultModelForClient(currentMode));
    }
@@ -4096,8 +4127,10 @@ function updateMode() {
 
    if (currentMode === 'agent') {
        if (presetSection) presetSection.style.display = 'none';
-       if (modelSection) modelSection.style.display = 'none';
-       if (capabilitySection) capabilitySection.style.display = 'none';
+       renderModelOptions();
+       renderCapabilityOptions();
+       if (modelSection) modelSection.style.display = '';
+       if (capabilitySection) capabilitySection.style.display = '';
        updateStatusText();
        updateSelectedCell();
        return;

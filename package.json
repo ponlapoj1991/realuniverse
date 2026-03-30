@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "validate:config": "node scripts/validate-config.mjs"
+    "validate:config": "node scripts/validate-config.mjs",
+    "test:agent-model-reasoning": "node scripts/test-agent-model-reasoning.mjs"
   }
 }
