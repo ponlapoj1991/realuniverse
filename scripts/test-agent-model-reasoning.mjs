@@ -109,6 +109,9 @@ function createAppsScriptSandbox() {
         throw new Error('UrlFetchApp.fetch is disabled in tests');
       }
     },
+    Logger: {
+      log() {}
+    },
     ScriptApp: {},
     ContentService: {},
     JSON,
@@ -478,6 +481,91 @@ function testAgentExecuteEmitsResolutionEvents(server) {
   assert(labels.some(label => label.includes('Wrote results to C2:C3')), 'execute path should report written range');
 }
 
+function testAgentPlanEventsIncludeStructuredTrace(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'Ready to analyze and write',
+    finalResponse: 'Will write to column C.',
+    actions: [
+      { type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C', instruction: 'sentiment' }
+    ]
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    threadId: 'thread-1',
+    phase: 'plan',
+    userPrompt: 'Analyze column A and write sentiment to column C',
+    executionLog: [],
+    planRetryCount: 0,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    intentType: 'operational',
+    context: { sheetName: 'Sheet1', rowCount: 12 }
+  });
+
+  const planningEvent = (result.events || [])[1];
+  assert(planningEvent && planningEvent.trace, 'plan event should include structured trace');
+  assert(planningEvent.trace.userPrompt === 'Analyze column A and write sentiment to column C', 'trace should keep original prompt');
+  assert(planningEvent.trace.intentType === 'operational', 'trace should keep intent type');
+  assert(Array.isArray(planningEvent.trace.actions) && planningEvent.trace.actions.length === 1, 'trace should include planner actions');
+  assert(planningEvent.trace.planSummary === 'Ready to analyze and write', 'trace should include plan summary');
+}
+
+function testAgentDebugLogRowsMapStructuredTrace(server) {
+  const events = [
+    server.createAgentTraceEvent({
+      threadId: 'thread-1',
+      phase: 'plan',
+      userPrompt: 'Analyze column A and write sentiment to column C',
+      intentType: 'operational',
+      selectedModel: 'gpt-5.4',
+      reasoningEffort: 'high',
+      planRetryCount: 1,
+      context: { sheetName: 'Sheet1', rowCount: 12 }
+    }, 'status', 'Planning next steps', {
+      planSummary: 'Ready to analyze and write',
+      actions: [{ type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C' }]
+    })
+  ];
+
+  const rows = server.buildAgentDebugLogRows(events, { done: false }, {
+    threadId: 'thread-1',
+    phase: 'plan',
+    userPrompt: 'Analyze column A and write sentiment to column C',
+    intentType: 'operational',
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    planRetryCount: 1,
+    context: { sheetName: 'Sheet1', rowCount: 12 }
+  });
+
+  assert(rows.length === 1, 'debug log should create one row per event by default');
+  assert(rows[0][1] === 'thread-1', 'debug row should keep thread id');
+  assert(rows[0][5] === 'Analyze column A and write sentiment to column C', 'debug row should keep user prompt');
+  assert(rows[0][6] === 'operational', 'debug row should keep intent type');
+  assert(rows[0][10] === 'Ready to analyze and write', 'debug row should keep plan summary');
+  assert(String(rows[0][11]).includes('analyze_fill'), 'debug row should keep actions payload');
+  assert(rows[0][17] === 'Sheet1', 'debug row should keep sheet name');
+}
+
+function testAgentDebugLogRowsIncludeFinalMessage(server) {
+  const rows = server.buildAgentDebugLogRows([], {
+    done: true,
+    finalMessage: 'Wrote 10 results into column C.'
+  }, {
+    threadId: 'thread-2',
+    phase: 'execute',
+    userPrompt: 'Write sentiment to C',
+    intentType: 'operational',
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    context: { sheetName: 'Sheet2', rowCount: 10 }
+  });
+
+  assert(rows.length === 1, 'final message should create a debug row when no events are present');
+  assert(rows[0][3] === 'final_message', 'final message row should use final_message event type');
+  assert(rows[0][15] === 'Wrote 10 results into column C.', 'final message row should keep final message');
+}
+
 const cases = [
   ['responses body uses text.format', testResponsesBodyUsesTextFormat],
   ['chat body keeps response_format', testChatBodyKeepsResponseFormat],
@@ -486,7 +574,10 @@ const cases = [
   ['agent operational plan retries before completing', testAgentOperationalPlanRetriesBeforeCompleting],
   ['agent operational plan fails clearly after retry', testAgentOperationalPlanFailsClearlyAfterRetry],
   ['agent operational plan advances to execute', testAgentOperationalPlanAdvancesToExecute],
-  ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents]
+  ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
+  ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
+  ['agent debug log rows map structured trace', testAgentDebugLogRowsMapStructuredTrace],
+  ['agent debug log rows include final message', testAgentDebugLogRowsIncludeFinalMessage]
 ];
 
 try {
