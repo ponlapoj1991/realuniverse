@@ -183,30 +183,7 @@ const MAX_TOTAL_ROWS_ARRAY = 10000;
 const SIDEBAR_WIDTH = 600;
 const SIDEBAR_HEIGHT = 900;
 const CHAT_SHEET_NAME = 'ChatHistory';
-const DEBUG_LOG_SHEET_NAME = 'DebugLog';
 const PRESET_STORAGE_KEY = 'REALUNIVERSE_PRESETS_V1';
-const AGENT_DEBUG_LOG_HEADERS = [
-  'Timestamp',
-  'Thread ID',
-  'Phase',
-  'Event Type',
-  'Label',
-  'User Prompt',
-  'Intent Type',
-  'Selected Model',
-  'Reasoning',
-  'Retry Count',
-  'Plan Summary',
-  'Actions',
-  'Tool Name',
-  'Tool Input',
-  'Tool Result',
-  'Final Message',
-  'Error',
-  'Sheet Name',
-  'Sheet Rows',
-  'Trace JSON'
-];
 
 /* ------------------ DYNAMIC PRESET FUNCTIONS ------------------ */
 
@@ -1041,7 +1018,6 @@ function processRealUniverseAgentStep(agentState) {
       ],
       nextState: nextState
     };
-    logAgentDebugTrace(response.events, response, nextState);
     return response;
   }
 
@@ -1080,7 +1056,6 @@ function processRealUniverseAgentStep(agentState) {
           })),
           nextState: nextState
         };
-        logAgentDebugTrace(response.events, response, nextState);
         return response;
       }
 
@@ -1095,7 +1070,6 @@ function processRealUniverseAgentStep(agentState) {
         finalMessage: 'ผมเข้าใจว่าเป็นงานที่ต้องลงมือทำกับชีต แต่ยังสร้างขั้นตอนที่รันได้ไม่สำเร็จ กรุณาระบุคอลัมน์ต้นทางหรือปลายทางให้ชัดขึ้นอีกครั้งครับ',
         nextState: null
       };
-      logAgentDebugTrace(response.events, response, state);
       return response;
     }
 
@@ -1106,7 +1080,6 @@ function processRealUniverseAgentStep(agentState) {
         finalMessage: plan.finalResponse || plan.summary || 'Done.',
         nextState: null
       };
-      logAgentDebugTrace(response.events, response, state);
       return response;
     }
 
@@ -1126,7 +1099,6 @@ function processRealUniverseAgentStep(agentState) {
       events: events,
       nextState: nextState
     };
-    logAgentDebugTrace(response.events, response, nextState);
     return response;
   }
 
@@ -1147,7 +1119,6 @@ function processRealUniverseAgentStep(agentState) {
         finalMessage: finalParts.join('\n\n').trim() || 'Done.',
         nextState: null
       };
-      logAgentDebugTrace(response.events, response, state);
       return response;
     }
 
@@ -1182,7 +1153,6 @@ function processRealUniverseAgentStep(agentState) {
         ],
         nextState: nextState
       };
-      logAgentDebugTrace(response.events, response, nextState);
       return response;
     }
 
@@ -1220,7 +1190,6 @@ function processRealUniverseAgentStep(agentState) {
           })],
           nextState: nextState
         };
-        logAgentDebugTrace(response.events, response, nextState);
         return response;
       }
 
@@ -1300,7 +1269,6 @@ function processRealUniverseAgentStep(agentState) {
           ]),
           nextState: nextState
         };
-        logAgentDebugTrace(response.events, response, nextState);
         return response;
       }
 
@@ -1327,7 +1295,6 @@ function processRealUniverseAgentStep(agentState) {
         ]),
         nextState: nextState
       };
-      logAgentDebugTrace(response.events, response, nextState);
       return response;
     }
   }
@@ -1340,7 +1307,6 @@ function processRealUniverseAgentStep(agentState) {
     finalMessage: 'Agent could not continue this task.',
     nextState: null
   };
-  logAgentDebugTrace(response.events, response, state);
   return response;
 }
 
@@ -2352,35 +2318,6 @@ function saveRealUniverseHistory(question, answer) {
   }
 }
 
-function getOrCreateDebugLogSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(DEBUG_LOG_SHEET_NAME);
-  if (!sheet) {
-    sheet = ss.insertSheet(DEBUG_LOG_SHEET_NAME);
-    sheet.getRange(1, 1, 1, AGENT_DEBUG_LOG_HEADERS.length).setValues([AGENT_DEBUG_LOG_HEADERS]).setFontWeight('bold');
-  }
-
-  const headerValues = sheet.getRange(1, 1, 1, AGENT_DEBUG_LOG_HEADERS.length).getValues()[0];
-  const headersMatch = AGENT_DEBUG_LOG_HEADERS.every((header, index) => String(headerValues[index] || '') === header);
-  if (!headersMatch) {
-    sheet.getRange(1, 1, 1, AGENT_DEBUG_LOG_HEADERS.length).setValues([AGENT_DEBUG_LOG_HEADERS]).setFontWeight('bold');
-  }
-
-  return sheet;
-}
-
-function stringifyAgentTraceValue(value) {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-
-  try {
-    return JSON.stringify(value);
-  } catch (e) {
-    return String(value);
-  }
-}
-
 function createAgentTrace(state, overrides) {
   const safeState = state || {};
   return {
@@ -2408,89 +2345,6 @@ function createAgentTraceEvent(state, type, label, traceOverrides) {
       ...(traceOverrides || {})
     })
   };
-}
-
-function buildAgentDebugLogRows(events, response, state) {
-  const rows = [];
-  const safeEvents = Array.isArray(events) ? events : [];
-
-  safeEvents.forEach(event => {
-    const trace = event && event.trace ? event.trace : createAgentTrace(state, {
-      eventType: event && event.type ? event.type : 'status',
-      label: event && event.label ? event.label : ''
-    });
-
-    rows.push([
-      new Date(),
-      trace.threadId || '',
-      trace.phase || '',
-      trace.eventType || '',
-      trace.label || '',
-      trace.userPrompt || '',
-      trace.intentType || '',
-      trace.selectedModel || '',
-      trace.reasoningEffort || '',
-      trace.retryCount === '' ? '' : trace.retryCount,
-      trace.planSummary || '',
-      stringifyAgentTraceValue(trace.actions || ''),
-      trace.toolName || '',
-      stringifyAgentTraceValue(trace.toolInput || ''),
-      stringifyAgentTraceValue(trace.toolResult || ''),
-      trace.finalMessage || '',
-      trace.error || '',
-      trace.sheetName || '',
-      trace.sheetRows === '' ? '' : trace.sheetRows,
-      stringifyAgentTraceValue(trace)
-    ]);
-  });
-
-  if (response && response.done && response.finalMessage) {
-    const finalTrace = createAgentTrace(state, {
-      eventType: 'final_message',
-      label: 'Final message',
-      finalMessage: response.finalMessage
-    });
-
-    rows.push([
-      new Date(),
-      finalTrace.threadId || '',
-      finalTrace.phase || '',
-      finalTrace.eventType || '',
-      finalTrace.label || '',
-      finalTrace.userPrompt || '',
-      finalTrace.intentType || '',
-      finalTrace.selectedModel || '',
-      finalTrace.reasoningEffort || '',
-      finalTrace.retryCount === '' ? '' : finalTrace.retryCount,
-      finalTrace.planSummary || '',
-      stringifyAgentTraceValue(finalTrace.actions || ''),
-      finalTrace.toolName || '',
-      stringifyAgentTraceValue(finalTrace.toolInput || ''),
-      stringifyAgentTraceValue(finalTrace.toolResult || ''),
-      finalTrace.finalMessage || '',
-      finalTrace.error || '',
-      finalTrace.sheetName || '',
-      finalTrace.sheetRows === '' ? '' : finalTrace.sheetRows,
-      stringifyAgentTraceValue(finalTrace)
-    ]);
-  }
-
-  return rows;
-}
-
-function appendAgentDebugLogRows(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return;
-
-  try {
-    const sheet = getOrCreateDebugLogSheet();
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, AGENT_DEBUG_LOG_HEADERS.length).setValues(rows);
-  } catch (e) {
-    Logger.log('Error saving agent debug log: ' + e.message);
-  }
-}
-
-function logAgentDebugTrace(events, response, state) {
-  appendAgentDebugLogRows(buildAgentDebugLogRows(events, response, state));
 }
 
 function clearRealUniverseHistory() {
@@ -2651,29 +2505,123 @@ body {
     font-size: 10px;
     line-height: 1.4;
 }
-.agent-trace-details {
-    margin-top: 6px;
-    border-top: 1px dashed rgba(148, 163, 184, 0.35);
-    padding-top: 6px;
-}
-.agent-trace-summary {
-    cursor: pointer;
-    color: #64748b;
-    font-size: 9px;
-    font-weight: 600;
-    user-select: none;
-}
-.agent-trace-pre {
-    margin-top: 6px;
-    font-size: 9px;
-    line-height: 1.45;
-    color: #475569;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
 .message-content strong {
     font-weight: 600;
     color: #1d1d1f;
+}
+
+.agent-log-btn {
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    background: white;
+    color: #1d1d1f;
+    cursor: pointer;
+    font-size: 10px;
+    padding: 6px 10px;
+    transition: all 0.2s ease;
+}
+.agent-log-btn:hover {
+    background: #f8f9fa;
+}
+.agent-log-modal {
+    width: min(760px, 100%);
+    max-height: 90vh;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 18px 48px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.agent-log-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid #eef0f3;
+}
+.agent-log-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.agent-log-title strong {
+    font-size: 14px;
+    color: #1d1d1f;
+}
+.agent-log-subtitle {
+    font-size: 10px;
+    color: #64748b;
+}
+.agent-log-actions {
+    display: inline-flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.agent-log-body {
+    padding: 16px 18px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background: #fcfdff;
+}
+.agent-log-empty {
+    border: 1px dashed #d6dde6;
+    border-radius: 12px;
+    padding: 14px;
+    font-size: 11px;
+    color: #64748b;
+    background: white;
+}
+.agent-log-entry {
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    background: white;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.agent-log-entry-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.agent-log-entry-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+.agent-log-entry-meta {
+    font-size: 10px;
+    color: #64748b;
+}
+.agent-log-entry-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.agent-log-entry-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+.agent-log-entry-pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #1d1d1f;
+    background: #f8fafc;
+    border: 1px solid #edf2f7;
+    border-radius: 10px;
+    padding: 10px 12px;
 }
 
 /* Copy Button Styles */
@@ -3544,6 +3492,12 @@ body {
 	                            <div class="popup-title" id="popupCapabilityTitle"><i data-lucide="sliders-horizontal"></i><span>Tone</span></div>
 	                            <div class="popup-options" id="popupCapabilityOptions"></div>
 	                        </div>
+	                        <div class="popup-section" id="popupAgentLogSection" style="display: none;">
+	                            <div class="popup-title-row">
+	                                <div class="popup-title"><i data-lucide="logs"></i><span>Agent Log</span></div>
+	                                <button class="agent-log-btn" onclick="openAgentLogModal()">View Log</button>
+	                            </div>
+	                        </div>
 	                    </div>
                     <button class="sendButton" id="sendButton" onclick="sendMessage()" aria-label="Send"></button>
                 </div>
@@ -3592,6 +3546,24 @@ body {
         </div>
     </div>
 </div>
+<div class="modal-overlay" id="agentLogModal" onclick="handleAgentLogModalBackdrop(event)">
+    <div class="agent-log-modal">
+        <div class="agent-log-toolbar">
+            <div class="agent-log-title">
+                <strong>Agent Log</strong>
+                <div class="agent-log-subtitle" id="agentLogSubtitle">Current thread</div>
+            </div>
+            <div class="agent-log-actions">
+                <button class="agent-log-btn" onclick="copyAgentLog()">Copy Log</button>
+                <button class="agent-log-btn" onclick="clearAgentLog()">Clear Log</button>
+                <button class="modal-close-btn" onclick="closeAgentLogModal()" aria-label="Close"><i data-lucide="x"></i></button>
+            </div>
+        </div>
+        <div class="agent-log-body" id="agentLogBody">
+            <div class="agent-log-empty">No log yet.</div>
+        </div>
+    </div>
+</div>
 <script>
 let currentMode = 'action';
 let currentPreset = null;
@@ -3636,6 +3608,7 @@ let currentReasoningSelections = {
 let activeAgentThreadId = null;
 let currentAgentState = null;
 let hasBootstrappedRealUniverseApp = false;
+let agentLogCurrentThreadId = null;
 
 const AGENT_DB_NAME = 'realuniverse-agent-v1';
 const AGENT_DB_VERSION = 1;
@@ -3804,6 +3777,10 @@ async function saveAgentTurn(threadId, role, phase, content, extra = {}) {
            status: 'active'
        });
    });
+
+   if (agentLogCurrentThreadId === threadId && document.getElementById('agentLogModal').classList.contains('show')) {
+       await refreshAgentLogModal();
+   }
 }
 
 async function saveAgentEvents(threadId, events) {
@@ -3819,6 +3796,10 @@ async function saveAgentEvents(threadId, events) {
            });
        });
    });
+
+   if (agentLogCurrentThreadId === threadId && document.getElementById('agentLogModal').classList.contains('show')) {
+       await refreshAgentLogModal();
+   }
 }
 
 async function upsertAgentMemory(threadId, memoryKey, value) {
@@ -4008,31 +3989,6 @@ function callServer(functionName, ...args) {
    });
 }
 
-function formatAgentTraceForDisplay(trace) {
-   if (!trace) return '';
-
-   const displayTrace = {
-       phase: trace.phase || '',
-       eventType: trace.eventType || '',
-       userPrompt: trace.userPrompt || '',
-       intentType: trace.intentType || '',
-       selectedModel: trace.selectedModel || '',
-       reasoningEffort: trace.reasoningEffort || '',
-       retryCount: typeof trace.retryCount === 'number' ? trace.retryCount : '',
-       planSummary: trace.planSummary || '',
-       actions: trace.actions || '',
-       toolName: trace.toolName || '',
-       toolInput: trace.toolInput || '',
-       toolResult: trace.toolResult || '',
-       finalMessage: trace.finalMessage || '',
-       error: trace.error || '',
-       sheetName: trace.sheetName || '',
-       sheetRows: typeof trace.sheetRows !== 'undefined' ? trace.sheetRows : ''
-   };
-
-   return JSON.stringify(displayTrace, null, 2);
-}
-
 function addAgentEventMessage(eventOrLabel) {
    const event = typeof eventOrLabel === 'object' && eventOrLabel !== null
        ? eventOrLabel
@@ -4049,26 +4005,257 @@ function addAgentEventMessage(eventOrLabel) {
    content.className = 'message-content';
    content.textContent = label;
 
-   if (event.trace) {
-       const details = document.createElement('details');
-       details.className = 'agent-trace-details';
-
-       const summary = document.createElement('summary');
-       summary.className = 'agent-trace-summary';
-       summary.textContent = 'Trace';
-
-       const pre = document.createElement('pre');
-       pre.className = 'agent-trace-pre';
-       pre.textContent = formatAgentTraceForDisplay(event.trace);
-
-       details.appendChild(summary);
-       details.appendChild(pre);
-       content.appendChild(details);
-   }
-
    messageDiv.appendChild(content);
    messages.appendChild(messageDiv);
    scrollToBottom();
+}
+
+function stringifyAgentLogValue(value) {
+   if (value == null || value === '') return '';
+   if (typeof value === 'string') return value;
+   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+   try {
+       return JSON.stringify(value, null, 2);
+   } catch (error) {
+       return String(value);
+   }
+}
+
+function formatAgentLogTimestamp(value) {
+   if (!value) return '';
+
+   const date = new Date(value);
+   if (Number.isNaN(date.getTime())) return '';
+   return date.toLocaleString();
+}
+
+function normalizeAgentLogEvent(threadId, event) {
+   const trace = event && event.trace ? event.trace : {};
+   return {
+       kind: 'event',
+       threadId: threadId,
+       createdAt: event && event.createdAt ? event.createdAt : Date.now(),
+       title: event && event.label ? event.label : 'Agent event',
+       meta: [trace.phase, trace.eventType].filter(Boolean).join(' • '),
+       sections: [
+           ['Prompt', trace.userPrompt],
+           ['Intent', trace.intentType],
+           ['Model', [trace.selectedModel, trace.reasoningEffort].filter(Boolean).join(' • ')],
+           ['Plan', trace.planSummary],
+           ['Actions', trace.actions],
+           ['Tool', trace.toolName],
+           ['Tool Input', trace.toolInput],
+           ['Tool Result', trace.toolResult],
+           ['Final Message', trace.finalMessage],
+           ['Error', trace.error]
+       ].filter(([, value]) => value != null && value !== '')
+   };
+}
+
+function normalizeAgentLogTurn(turn) {
+  return {
+       kind: 'turn',
+       threadId: turn.threadId,
+       createdAt: turn.createdAt,
+       title: String(turn.role || 'agent').toUpperCase() + ' · ' + String(turn.phase || 'message'),
+       meta: '',
+       sections: [
+        ['Content', turn.content || '']
+       ]
+   };
+}
+
+function normalizeAgentLogSummary(summary) {
+   if (!summary) return null;
+   return {
+       kind: 'summary',
+       threadId: '',
+       createdAt: 0,
+       title: 'Rolling Summary',
+       meta: '',
+       sections: [
+           ['Content', summary]
+       ]
+   };
+}
+
+function buildAgentLogEntries(turns, events, summary) {
+   const normalizedTurns = (Array.isArray(turns) ? turns : []).map(turn => normalizeAgentLogTurn(turn));
+   const normalizedEvents = (Array.isArray(events) ? events : []).map(event => normalizeAgentLogEvent(event.threadId || '', event));
+   const normalizedSummary = normalizeAgentLogSummary(summary);
+
+   return []
+       .concat(normalizedSummary ? [normalizedSummary] : [])
+       .concat(normalizedTurns)
+       .concat(normalizedEvents)
+       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+}
+
+function buildAgentLogText(threadLabel, entries) {
+   const lines = [];
+   lines.push('Agent Log');
+   if (threadLabel) {
+       lines.push('Thread: ' + threadLabel);
+   }
+
+   entries.forEach(entry => {
+       lines.push('');
+       lines.push('[' + formatAgentLogTimestamp(entry.createdAt) + '] ' + entry.title);
+       if (entry.meta) {
+           lines.push('Meta: ' + entry.meta);
+       }
+
+       (entry.sections || []).forEach(section => {
+           lines.push(section[0] + ':');
+           lines.push(stringifyAgentLogValue(section[1]));
+       });
+   });
+
+   return lines.join('\\n').trim();
+}
+
+function renderAgentLogEntries(entries) {
+   const body = document.getElementById('agentLogBody');
+   if (!body) return;
+
+   body.innerHTML = '';
+   if (!entries.length) {
+       body.innerHTML = '<div class="agent-log-empty">No log yet.</div>';
+       return;
+   }
+
+   entries.forEach(entry => {
+       const card = document.createElement('div');
+       card.className = 'agent-log-entry';
+
+       const head = document.createElement('div');
+       head.className = 'agent-log-entry-head';
+
+       const title = document.createElement('div');
+       title.className = 'agent-log-entry-title';
+       title.textContent = entry.title;
+
+       const meta = document.createElement('div');
+       meta.className = 'agent-log-entry-meta';
+       meta.textContent = [formatAgentLogTimestamp(entry.createdAt), entry.meta].filter(Boolean).join(' • ');
+
+       head.appendChild(title);
+       head.appendChild(meta);
+       card.appendChild(head);
+
+       (entry.sections || []).forEach(section => {
+           const sectionDiv = document.createElement('div');
+           sectionDiv.className = 'agent-log-entry-section';
+
+           const label = document.createElement('div');
+           label.className = 'agent-log-entry-label';
+           label.textContent = section[0];
+
+           const pre = document.createElement('pre');
+           pre.className = 'agent-log-entry-pre';
+           pre.textContent = stringifyAgentLogValue(section[1]);
+
+           sectionDiv.appendChild(label);
+           sectionDiv.appendChild(pre);
+           card.appendChild(sectionDiv);
+       });
+
+       body.appendChild(card);
+   });
+}
+
+async function getAgentLogThreadId() {
+   if (activeAgentThreadId) return activeAgentThreadId;
+
+   const context = await callServer('getActiveSheetContext');
+   return buildAgentSheetKey(context);
+}
+
+async function loadAgentLogSnapshot(threadId) {
+   const turns = await getAgentTurns(threadId);
+   const events = await getAgentEvents(threadId);
+   const summary = await getAgentMemorySummary(threadId);
+   const thread = await getAgentThread(threadId);
+   return {
+       threadId,
+       thread,
+       summary,
+       turns,
+       events,
+       entries: buildAgentLogEntries(turns, events, summary)
+   };
+}
+
+async function refreshAgentLogModal() {
+   const threadId = agentLogCurrentThreadId || await getAgentLogThreadId();
+   agentLogCurrentThreadId = threadId;
+   const snapshot = await loadAgentLogSnapshot(threadId);
+   const subtitle = document.getElementById('agentLogSubtitle');
+   if (subtitle) {
+       subtitle.textContent = snapshot.thread && snapshot.thread.title
+           ? snapshot.thread.title
+           : 'Current thread';
+   }
+   renderAgentLogEntries(snapshot.entries);
+   return snapshot;
+}
+
+async function openAgentLogModal() {
+   document.getElementById('settingsPopup').classList.remove('show');
+   const modal = document.getElementById('agentLogModal');
+   modal.classList.add('show');
+   await refreshAgentLogModal();
+   refreshIcons();
+}
+
+function closeAgentLogModal() {
+   document.getElementById('agentLogModal').classList.remove('show');
+}
+
+function handleAgentLogModalBackdrop(event) {
+   if (event.target.id === 'agentLogModal') {
+       closeAgentLogModal();
+   }
+}
+
+async function copyAgentLog() {
+   const snapshot = await refreshAgentLogModal();
+   const text = buildAgentLogText(
+       snapshot.thread && snapshot.thread.title ? snapshot.thread.title : '',
+       snapshot.entries
+   );
+   await navigator.clipboard.writeText(text || 'Agent Log');
+}
+
+async function clearAgentThreadData(threadId) {
+   await runInAgentTransaction(['agent_turns', 'agent_events', 'agent_memory', 'agent_threads'], 'readwrite', stores => {
+       const turnRequest = stores.agent_turns.getAll();
+       const eventRequest = stores.agent_events.getAll();
+       const memoryRequest = stores.agent_memory.getAll();
+
+       return Promise.all([
+           idbRequestToPromise(turnRequest),
+           idbRequestToPromise(eventRequest),
+           idbRequestToPromise(memoryRequest)
+       ]).then(([turns, events, memories]) => {
+           turns.filter(turn => turn.threadId === threadId).forEach(turn => stores.agent_turns.delete(turn.id));
+           events.filter(event => event.threadId === threadId).forEach(event => stores.agent_events.delete(event.id));
+           memories.filter(memory => memory.threadId === threadId).forEach(memory => stores.agent_memory.delete(memory.id));
+           stores.agent_threads.delete(threadId);
+       });
+   });
+}
+
+async function clearAgentLog() {
+   const threadId = agentLogCurrentThreadId || await getAgentLogThreadId();
+   await clearAgentThreadData(threadId);
+   if (activeAgentThreadId === threadId) {
+       activeAgentThreadId = null;
+       currentAgentState = null;
+   }
+   agentLogCurrentThreadId = threadId;
+   await refreshAgentLogModal();
 }
 
 async function playAgentEvents(threadId, events) {
@@ -4527,6 +4714,7 @@ function updateMode() {
    const presetSection = document.getElementById('popupPresetSection');
    const modelSection = document.getElementById('popupModelSection');
    const capabilitySection = document.getElementById('popupCapabilitySection');
+   const agentLogSection = document.getElementById('popupAgentLogSection');
 
    if (currentMode === 'action') {
        turboToggle.style.display = 'flex';
@@ -4542,12 +4730,14 @@ function updateMode() {
        renderCapabilityOptions();
        if (modelSection) modelSection.style.display = '';
        if (capabilitySection) capabilitySection.style.display = '';
+       if (agentLogSection) agentLogSection.style.display = '';
        updateStatusText();
        updateSelectedCell();
        return;
    }
 
    if (presetSection) presetSection.style.display = '';
+   if (agentLogSection) agentLogSection.style.display = 'none';
    renderModelOptions();
    renderCapabilityOptions();
    if (modelSection && isTextModeClient(currentMode)) {
@@ -4997,6 +5187,11 @@ function registerGlobalShellHandlers() {
        openPresetManager,
        closePresetManager,
        handlePresetModalBackdrop,
+       openAgentLogModal,
+       closeAgentLogModal,
+       handleAgentLogModalBackdrop,
+       copyAgentLog,
+       clearAgentLog,
        selectPresetManagerMode,
        resetPresetForm,
        deletePresetFromModal,

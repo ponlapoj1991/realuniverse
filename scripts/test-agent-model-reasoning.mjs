@@ -510,60 +510,124 @@ function testAgentPlanEventsIncludeStructuredTrace(server) {
   assert(planningEvent.trace.planSummary === 'Ready to analyze and write', 'trace should include plan summary');
 }
 
-function testAgentDebugLogRowsMapStructuredTrace(server) {
-  const events = [
-    server.createAgentTraceEvent({
+function testAgentLogTextIncludesTurnsAndEvents(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
+
+  const turns = [
+    {
       threadId: 'thread-1',
-      phase: 'plan',
-      userPrompt: 'Analyze column A and write sentiment to column C',
-      intentType: 'operational',
-      selectedModel: 'gpt-5.4',
-      reasoningEffort: 'high',
-      planRetryCount: 1,
-      context: { sheetName: 'Sheet1', rowCount: 12 }
-    }, 'status', 'Planning next steps', {
-      planSummary: 'Ready to analyze and write',
-      actions: [{ type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C' }]
-    })
+      role: 'user',
+      phase: 'prompt',
+      content: 'Analyze column A and write sentiment to column C',
+      createdAt: 1
+    }
+  ];
+  const events = [
+    {
+      threadId: 'thread-1',
+      label: 'Resolved target column C',
+      createdAt: 2,
+      trace: {
+        phase: 'execute',
+        eventType: 'tool_result',
+        userPrompt: 'Analyze column A and write sentiment to column C',
+        intentType: 'operational',
+        selectedModel: 'gpt-5.4',
+        reasoningEffort: 'high',
+        actions: [{ type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C' }],
+        toolResult: { range: 'C2:C3' }
+      }
+    }
   ];
 
-  const rows = server.buildAgentDebugLogRows(events, { done: false }, {
-    threadId: 'thread-1',
-    phase: 'plan',
-    userPrompt: 'Analyze column A and write sentiment to column C',
-    intentType: 'operational',
-    selectedModel: 'gpt-5.4',
-    reasoningEffort: 'high',
-    planRetryCount: 1,
-    context: { sheetName: 'Sheet1', rowCount: 12 }
-  });
+  browserSandbox.__testTurns = turns;
+  browserSandbox.__testEvents = events;
+  const text = vm.runInContext(
+    `buildAgentLogText('Agent · Sheet1', buildAgentLogEntries(__testTurns, __testEvents))`,
+    browserSandbox
+  );
 
-  assert(rows.length === 1, 'debug log should create one row per event by default');
-  assert(rows[0][1] === 'thread-1', 'debug row should keep thread id');
-  assert(rows[0][5] === 'Analyze column A and write sentiment to column C', 'debug row should keep user prompt');
-  assert(rows[0][6] === 'operational', 'debug row should keep intent type');
-  assert(rows[0][10] === 'Ready to analyze and write', 'debug row should keep plan summary');
-  assert(String(rows[0][11]).includes('analyze_fill'), 'debug row should keep actions payload');
-  assert(rows[0][17] === 'Sheet1', 'debug row should keep sheet name');
+  assert(String(text).includes('Agent Log'), 'agent log text should include a header');
+  assert(String(text).includes('Thread: Agent · Sheet1'), 'agent log text should include the thread label');
+  assert(String(text).includes('Analyze column A and write sentiment to column C'), 'agent log text should include user content');
+  assert(String(text).includes('Resolved target column C'), 'agent log text should include event labels');
+  assert(String(text).includes('analyze_fill'), 'agent log text should include action payloads');
 }
 
-function testAgentDebugLogRowsIncludeFinalMessage(server) {
-  const rows = server.buildAgentDebugLogRows([], {
-    done: true,
-    finalMessage: 'Wrote 10 results into column C.'
-  }, {
-    threadId: 'thread-2',
-    phase: 'execute',
-    userPrompt: 'Write sentiment to C',
-    intentType: 'operational',
-    selectedModel: 'gpt-5.4',
-    reasoningEffort: 'high',
-    context: { sheetName: 'Sheet2', rowCount: 10 }
-  });
+async function testClearAgentThreadDataDeletesOnlyTargetThread(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
 
-  assert(rows.length === 1, 'final message should create a debug row when no events are present');
-  assert(rows[0][3] === 'final_message', 'final message row should use final_message event type');
-  assert(rows[0][15] === 'Wrote 10 results into column C.', 'final message row should keep final message');
+  const deleted = {
+    turns: [],
+    events: [],
+    memories: [],
+    threads: []
+  };
+
+  browserSandbox.__turns = [
+    { id: 'turn-1', threadId: 'thread-1' },
+    { id: 'turn-2', threadId: 'thread-2' }
+  ];
+  browserSandbox.__events = [
+    { id: 'event-1', threadId: 'thread-1' },
+    { id: 'event-2', threadId: 'thread-2' }
+  ];
+  browserSandbox.__memories = [
+    { id: 'memory-1', threadId: 'thread-1' },
+    { id: 'memory-2', threadId: 'thread-2' }
+  ];
+
+  browserSandbox.idbRequestToPromise = request => Promise.resolve(request.result);
+  browserSandbox.runInAgentTransaction = async (_storeNames, _mode, handler) => {
+    const stores = {
+      agent_turns: {
+        getAll() {
+          return { result: browserSandbox.__turns };
+        },
+        delete(id) {
+          deleted.turns.push(id);
+        }
+      },
+      agent_events: {
+        getAll() {
+          return { result: browserSandbox.__events };
+        },
+        delete(id) {
+          deleted.events.push(id);
+        }
+      },
+      agent_memory: {
+        getAll() {
+          return { result: browserSandbox.__memories };
+        },
+        delete(id) {
+          deleted.memories.push(id);
+        }
+      },
+      agent_threads: {
+        delete(id) {
+          deleted.threads.push(id);
+        }
+      }
+    };
+
+    return handler(stores);
+  };
+
+  await browserSandbox.clearAgentThreadData('thread-1');
+
+  assert(deleted.turns.length === 1 && deleted.turns[0] === 'turn-1', 'clear log should delete only target thread turns');
+  assert(deleted.events.length === 1 && deleted.events[0] === 'event-1', 'clear log should delete only target thread events');
+  assert(deleted.memories.length === 1 && deleted.memories[0] === 'memory-1', 'clear log should delete only target thread memories');
+  assert(deleted.threads.length === 1 && deleted.threads[0] === 'thread-1', 'clear log should delete only target thread record');
 }
 
 const cases = [
@@ -576,14 +640,14 @@ const cases = [
   ['agent operational plan advances to execute', testAgentOperationalPlanAdvancesToExecute],
   ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
-  ['agent debug log rows map structured trace', testAgentDebugLogRowsMapStructuredTrace],
-  ['agent debug log rows include final message', testAgentDebugLogRowsIncludeFinalMessage]
+  ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
+  ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread]
 ];
 
 try {
   const { sandbox } = loadServerContext();
   for (const [name, testCase] of cases) {
-    testCase(sandbox);
+    await testCase(sandbox);
     console.log(`PASS ${name}`);
   }
 } catch (error) {
