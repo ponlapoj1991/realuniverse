@@ -584,7 +584,7 @@ function testAgentExecuteRespectsRequestedRowLimit(server) {
 
 function testAgentNormalizesAdjacentInsertAndExplicitColumns(server) {
   const actions = server.normalizeAgentPlanActions(
-    'สร้างคอลัมน์ใหม่ขึ้นมาข้าง ๆ คอลัมน์ Content แล้วเขียน sentiment ลงคอลัมน์ C',
+    'สร้างคอลัมน์ใหม่ข้าง ๆ คอลัมน์ Content ชื่อ Sentiment2 โดยระบุเป็น positive, neutral, negative แล้ววิเคราะห์แค่ 40 แถวแรกจาก Content ลงคอลัมน์นั้น',
     {
       context: {
         lastColumn: 4,
@@ -598,13 +598,46 @@ function testAgentNormalizesAdjacentInsertAndExplicitColumns(server) {
     },
     [
       { type: 'insert_column', position: 'CON', headerName: '', sourceColumn: '', targetColumn: '', instruction: '' },
-      { type: 'analyze_fill', position: '', headerName: '', sourceColumn: 'A', targetColumn: 'C', instruction: 'sentiment' }
+      { type: 'analyze_fill', position: '', headerName: '', sourceColumn: 'C', targetColumn: 'CON', instruction: 'sentiment' }
     ]
   );
 
   assert(actions[0].position === 'D', 'adjacent insert should normalize next to the Content header');
-  assert(actions[1].sourceColumn === 'A', 'explicit source column letter should win');
-  assert(actions[1].targetColumn === 'C', 'explicit target column letter should win');
+  assert(actions[0].headerName === 'Sentiment2', 'insert action should preserve the requested header name');
+  assert(actions[1].sourceColumn === 'C', 'explicit source column letter should stay resolved');
+  assert(actions[1].targetColumn === 'D', 'analyze target should normalize to the inserted column');
+}
+
+function testAgentExecuteFailsClearlyForUnresolvedActions(server) {
+  const result = server.processRealUniverseAgentStep({
+    phase: 'execute',
+    userPrompt: 'สร้างคอลัมน์ใหม่ข้าง ๆ คอลัมน์ Content แล้วเขียนผลลงคอลัมน์นั้น',
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 10,
+      columnCount: 2,
+      lastColumn: 2,
+      columns: [
+        { index: 1, letter: 'A', header: 'Title', label: 'Title' },
+        { index: 2, letter: 'B', header: 'Summary', label: 'Summary' }
+      ]
+    },
+    plan: {
+      actions: [
+        { type: 'insert_column', position: 'CON', headerName: 'Sentiment2' }
+      ]
+    },
+    currentActionIndex: 0,
+    currentBatchIndex: 0,
+    actionRuntime: null,
+    executionLog: [],
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(result.done === true, 'unresolved actions should stop before execute');
+  assert(String(result.finalMessage || '').includes('แปลงคอลัมน์หรือปลายทางให้เป็นคำสั่งที่รันได้จริงไม่สำเร็จ'), 'failure should explain normalization could not complete');
+  assert((result.events || []).some(event => event.label === 'Could not normalize executable steps'), 'failure path should emit a normalization error event');
 }
 
 function testAgentDeleteColumnRepairCreatesDeleteAction(server) {
@@ -1162,6 +1195,7 @@ const cases = [
   ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
   ['agent execute respects requested row limit', testAgentExecuteRespectsRequestedRowLimit],
   ['agent normalizes adjacent insert and explicit columns', testAgentNormalizesAdjacentInsertAndExplicitColumns],
+  ['agent execute fails clearly for unresolved actions', testAgentExecuteFailsClearlyForUnresolvedActions],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
   ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread],
