@@ -1016,6 +1016,91 @@ function inferAgentHeaderName(userPrompt) {
   return '';
 }
 
+function normalizeAgentPlanActions(userPrompt, agentState, actions) {
+  const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
+  const safeActions = Array.isArray(actions) ? actions : [];
+
+  return safeActions.map(action => {
+    const normalized = {
+      type: cleanCellData(action && action.type || ''),
+      position: cleanCellData(action && action.position || ''),
+      headerName: cleanCellData(action && action.headerName || action && action.header || ''),
+      sourceColumn: cleanCellData(action && action.sourceColumn || ''),
+      targetColumn: cleanCellData(action && action.targetColumn || ''),
+      instruction: cleanCellData(action && action.instruction || '')
+    };
+
+    if (normalized.type === 'delete_column' && !normalized.targetColumn) {
+      const inferredTarget = inferAgentTargetColumn(userPrompt, context);
+      if (inferredTarget && inferredTarget.letter) {
+        normalized.targetColumn = inferredTarget.letter;
+      }
+    }
+
+    return normalized;
+  });
+}
+
+function resolveAgentDeleteTargetColumn(action, state) {
+  const context = state && state.context ? state.context : getActiveSheetContext();
+  const explicitTarget = cleanCellData(action && action.targetColumn || '');
+
+  if (explicitTarget) {
+    const resolvedExplicit = resolveExistingColumnReference(explicitTarget, context);
+    if (resolvedExplicit) return resolvedExplicit;
+  }
+
+  const inferredTarget = inferAgentTargetColumn(state && state.userPrompt ? state.userPrompt : '', context);
+  if (inferredTarget && inferredTarget.letter) {
+    const resolvedInferred = resolveExistingColumnReference(inferredTarget.letter, context);
+    if (resolvedInferred) return resolvedInferred;
+  }
+
+  return null;
+}
+
+function buildAgentNaturalFinalMessage(state, plan, executionLog) {
+  const safePlan = plan || { actions: [] };
+  const actions = Array.isArray(safePlan.actions) ? safePlan.actions : [];
+  const safeExecutionLog = Array.isArray(executionLog) ? executionLog : [];
+
+  const insertAction = actions.find(action => action && action.type === 'insert_column');
+  const deleteAction = actions.find(action => action && action.type === 'delete_column');
+  const analyzeAction = actions.find(action => action && action.type === 'analyze_fill');
+  const writeMatch = safeExecutionLog
+    .map(entry => String(entry || '').match(/^Wrote\s+(\d+)\s+results\s+into\s+column\s+([A-Z]{1,3})\.$/))
+    .find(Boolean);
+
+  if (deleteAction) {
+    const deletedColumn = cleanCellData(deleteAction.targetColumn || '');
+    if (deletedColumn) {
+      return 'ผมลบคอลัมน์ ' + deletedColumn + ' ให้แล้วครับ';
+    }
+  }
+
+  if (insertAction && analyzeAction && writeMatch) {
+    const headerName = cleanCellData(insertAction.headerName || '');
+    const insertedColumn = cleanCellData(insertAction.position || analyzeAction.targetColumn || '');
+    const sourceColumn = cleanCellData(analyzeAction.sourceColumn || '');
+    const rowsWritten = writeMatch[1];
+    const label = headerName ? '"' + headerName + '"' : 'คอลัมน์ ' + insertedColumn;
+    return 'ผมเพิ่มคอลัมน์ ' + label + ' ที่ ' + insertedColumn + ' แล้ววิเคราะห์คอลัมน์ ' + sourceColumn + ' และเขียนผลครบ ' + rowsWritten + ' แถวแล้วครับ';
+  }
+
+  if (analyzeAction && writeMatch) {
+    const sourceColumn = cleanCellData(analyzeAction.sourceColumn || '');
+    const targetColumn = writeMatch[2];
+    const rowsWritten = writeMatch[1];
+    return 'ผมวิเคราะห์คอลัมน์ ' + sourceColumn + ' และเขียนผลลงคอลัมน์ ' + targetColumn + ' ครบ ' + rowsWritten + ' แถวแล้วครับ';
+  }
+
+  if (safePlan.finalResponse) {
+    return safePlan.finalResponse;
+  }
+
+  return 'ผมดำเนินการเสร็จแล้วครับ';
+}
+
 function repairOperationalAgentPlan(userPrompt, agentState, plan) {
   const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
   const existingPlan = plan || { actions: [] };
@@ -1111,7 +1196,7 @@ function buildAgentPlan(userPrompt, agentState, options = {}) {
   return {
     summary: cleanCellData(parsed.summary || 'Plan ready'),
     finalResponse: cleanCellData(parsed.finalResponse || ''),
-    actions: safeActions
+    actions: normalizeAgentPlanActions(userPrompt, agentState, safeActions
       .filter(action => action && ['insert_column', 'delete_column', 'analyze_fill'].includes(action.type))
       .map(action => ({
         type: action.type,
@@ -1120,7 +1205,7 @@ function buildAgentPlan(userPrompt, agentState, options = {}) {
         sourceColumn: cleanCellData(action.sourceColumn || ''),
         targetColumn: cleanCellData(action.targetColumn || ''),
         instruction: cleanCellData(action.instruction || '')
-      }))
+      })))
   };
 }
 
@@ -1317,15 +1402,14 @@ function processRealUniverseAgentStep(agentState) {
 
     if (!action) {
       const executionLog = Array.isArray(state.executionLog) ? state.executionLog : [];
-      const finalParts = executionLog.length > 0 ? [executionLog.join('\n')] : [];
-      if (finalParts.length === 0 && plan.finalResponse) finalParts.push(plan.finalResponse);
+      const finalMessage = buildAgentNaturalFinalMessage(state, plan, executionLog);
 
       const response = {
         done: true,
         events: [createAgentTraceEvent(state, 'status', 'Agent run complete', {
-          finalMessage: finalParts.join('\n\n').trim() || 'Done.'
+          finalMessage: finalMessage
         })],
-        finalMessage: finalParts.join('\n\n').trim() || 'Done.',
+        finalMessage: finalMessage,
         nextState: null
       };
       return response;
@@ -1366,7 +1450,24 @@ function processRealUniverseAgentStep(agentState) {
     }
 
     if (action.type === 'delete_column') {
-      const result = deleteColumnAt(action.targetColumn);
+      const resolvedTargetColumn = resolveAgentDeleteTargetColumn(action, state);
+      if (!resolvedTargetColumn) {
+        return {
+          done: true,
+          events: [createAgentTraceEvent(state, 'error', 'Could not resolve a column to delete', {
+            intentType: state.intentType || '',
+            toolName: 'deleteColumnAt',
+            toolInput: {
+              targetColumn: cleanCellData(action.targetColumn || '')
+            },
+            error: 'Delete column target could not be resolved'
+          })],
+          finalMessage: 'ผมหาคอลัมน์ที่ต้องลบไม่เจอ กรุณาระบุคอลัมน์ให้ชัดขึ้นอีกครั้งครับ',
+          nextState: null
+        };
+      }
+
+      const result = deleteColumnAt(resolvedTargetColumn.letter);
       const updatedContext = getActiveSheetContext();
       const executionLog = (state.executionLog || []).concat(
         'Deleted column ' + result.columnLetter + '.'
@@ -1385,7 +1486,7 @@ function processRealUniverseAgentStep(agentState) {
           createAgentTraceEvent(state, 'tool_call', 'Deleting column ' + result.columnLetter, {
             toolName: 'deleteColumnAt',
             toolInput: {
-              targetColumn: action.targetColumn
+              targetColumn: resolvedTargetColumn.letter
             }
           }),
           createAgentTraceEvent(state, 'tool_result', 'Deleted column ' + result.columnLetter, {
@@ -4385,10 +4486,9 @@ function ensureAgentWorkPanel() {
    panel.innerHTML = [
        '<div class="agent-work-header">',
            '<div>',
-               '<div class="agent-work-title">Agent is working</div>',
-               '<div class="agent-work-subtitle" id="agentWorkSubtitle">Preparing next steps</div>',
+               '<div class="agent-work-title">Thinking</div>',
+               '<div class="agent-work-subtitle" id="agentWorkSubtitle">Working on the active sheet</div>',
            '</div>',
-           '<div class="agent-work-status" id="agentWorkStatus">LIVE</div>',
        '</div>',
        '<div class="agent-work-list" id="agentWorkList"></div>'
    ].join('');
@@ -4403,15 +4503,11 @@ function renderAgentWorkPanel() {
 
    currentAgentWorkRun.panel = panel;
    const subtitle = panel.querySelector('#agentWorkSubtitle');
-   const status = panel.querySelector('#agentWorkStatus');
    const list = panel.querySelector('#agentWorkList');
    const items = buildAgentWorkItems(currentAgentWorkRun.events, currentAgentWorkRun.complete);
 
    if (subtitle) {
-       subtitle.textContent = currentAgentWorkRun.question || 'Working on the active sheet';
-   }
-   if (status) {
-       status.textContent = currentAgentWorkRun.complete ? 'DONE' : 'LIVE';
+       subtitle.textContent = 'Working on the active sheet';
    }
    if (list) {
        list.innerHTML = '';
@@ -5686,12 +5782,10 @@ if (messageInput) {
        this.style.height = this.scrollHeight + 'px';
    });
 
-   messageInput.addEventListener('keypress', function(e) {
-       if (e.key === 'Enter' && e.ctrlKey) {
+   messageInput.addEventListener('keydown', function(e) {
+       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
            e.preventDefault();
            sendMessage();
-       } else if (e.key === 'Enter' && !e.shiftKey) {
-           e.preventDefault();
        }
    });
 }

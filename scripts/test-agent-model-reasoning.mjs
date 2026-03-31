@@ -633,6 +633,180 @@ function testAgentDeleteColumnExecutes(server) {
   assert(labels.includes('Deleted column C'), 'delete execute should emit tool result label');
 }
 
+function testAgentDeleteColumnResolvesBlankTargetFromPrompt(server) {
+  const deletedColumns = [];
+  server.SpreadsheetApp = {
+    getActiveSheet() {
+      return {
+        getSheetId() {
+          return 1;
+        },
+        getName() {
+          return 'Sheet1';
+        },
+        getLastColumn() {
+          return 3;
+        },
+        getLastRow() {
+          return 2;
+        },
+        getMaxColumns() {
+          return 26;
+        },
+        getRange() {
+          return {
+            getDisplayValues() {
+              return [['content', 'sentiment', 'notes']];
+            }
+          };
+        },
+        deleteColumn(index) {
+          deletedColumns.push(index);
+        }
+      };
+    },
+    getActiveSpreadsheet() {
+      return {
+        getId() {
+          return 'spreadsheet-id';
+        },
+        getName() {
+          return 'Spreadsheet';
+        }
+      };
+    },
+    flush() {}
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'execute',
+    userPrompt: 'ลบคอลัมน์ C ออกให้หน่อย',
+    plan: {
+      actions: [
+        { type: 'delete_column', targetColumn: '' }
+      ]
+    },
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 1,
+      columnCount: 3,
+      lastColumn: 3,
+      columns: [
+        { index: 1, letter: 'A', header: 'content', label: 'content' },
+        { index: 2, letter: 'B', header: 'sentiment', label: 'sentiment' },
+        { index: 3, letter: 'C', header: 'notes', label: 'notes' }
+      ]
+    },
+    currentActionIndex: 0,
+    currentBatchIndex: 0,
+    actionRuntime: null,
+    executionLog: [],
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(deletedColumns.length === 1 && deletedColumns[0] === 3, 'delete action should recover target column from prompt');
+  const labels = (result.events || []).map(event => event.label);
+  assert(labels.includes('Deleting column C'), 'resolved delete should emit tool call label');
+}
+
+function testAgentDeleteColumnFailsClearlyWhenTargetCannotResolve(server) {
+  const deletedColumns = [];
+  server.SpreadsheetApp = {
+    getActiveSheet() {
+      return {
+        getSheetId() {
+          return 1;
+        },
+        getName() {
+          return 'Sheet1';
+        },
+        getLastColumn() {
+          return 2;
+        },
+        getLastRow() {
+          return 2;
+        },
+        getMaxColumns() {
+          return 26;
+        },
+        getRange() {
+          return {
+            getDisplayValues() {
+              return [['content', 'sentiment']];
+            }
+          };
+        },
+        deleteColumn(index) {
+          deletedColumns.push(index);
+        }
+      };
+    },
+    getActiveSpreadsheet() {
+      return {
+        getId() {
+          return 'spreadsheet-id';
+        },
+        getName() {
+          return 'Spreadsheet';
+        }
+      };
+    },
+    flush() {}
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'execute',
+    userPrompt: 'ลบคอลัมน์ Z ออกให้หน่อย',
+    plan: {
+      actions: [
+        { type: 'delete_column', targetColumn: '' }
+      ]
+    },
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 1,
+      columnCount: 2,
+      lastColumn: 2,
+      columns: [
+        { index: 1, letter: 'A', header: 'content', label: 'content' },
+        { index: 2, letter: 'B', header: 'sentiment', label: 'sentiment' }
+      ]
+    },
+    currentActionIndex: 0,
+    currentBatchIndex: 0,
+    actionRuntime: null,
+    executionLog: [],
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(result.done === true, 'unresolved delete should stop the run');
+  assert(deletedColumns.length === 0, 'unresolved delete should not delete any column');
+  assert(String(result.finalMessage).includes('หาคอลัมน์ที่ต้องลบไม่เจอ'), 'unresolved delete should return a clear failure message');
+}
+
+function testAgentBuildsNaturalFinalResponse(server) {
+  const message = server.buildAgentNaturalFinalMessage(
+    {},
+    {
+      finalResponse: '',
+      actions: [
+        { type: 'insert_column', position: 'B', headerName: 'Summary' },
+        { type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'B', instruction: 'summarize' }
+      ]
+    },
+    [
+      'Inserted column B with header "Summary".',
+      'Wrote 56 results into column B.'
+    ]
+  );
+
+  assert(String(message).includes('ผมเพิ่มคอลัมน์ "Summary" ที่ B'), 'natural final response should describe the insert in user-facing language');
+  assert(String(message).includes('56 แถว'), 'natural final response should mention rows written');
+  assert(!String(message).includes('Wrote 56 results'), 'natural final response should not leak raw execution log text');
+}
+
 function testAgentPlanEventsIncludeStructuredTrace(server) {
   server.buildAgentPlan = () => ({
     summary: 'Ready to analyze and write',
@@ -815,6 +989,9 @@ const cases = [
   ['agent operational plan advances to execute', testAgentOperationalPlanAdvancesToExecute],
   ['agent delete repair creates delete action', testAgentDeleteColumnRepairCreatesDeleteAction],
   ['agent delete action executes', testAgentDeleteColumnExecutes],
+  ['agent delete resolves blank target from prompt', testAgentDeleteColumnResolvesBlankTargetFromPrompt],
+  ['agent delete fails clearly when target cannot resolve', testAgentDeleteColumnFailsClearlyWhenTargetCannotResolve],
+  ['agent builds natural final response', testAgentBuildsNaturalFinalResponse],
   ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
