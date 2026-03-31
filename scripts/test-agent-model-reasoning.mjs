@@ -523,6 +523,90 @@ function testAgentExecuteEmitsResolutionEvents(server) {
   assert(labels.some(label => label.includes('Wrote results to C2:C3')), 'execute path should report written range');
 }
 
+function testAgentExecuteRespectsRequestedRowLimit(server) {
+  let analyzedRowCount = 0;
+  server.resolveColumnReference = ref => ({
+    index: ref === 'A' ? 1 : 3,
+    letter: ref,
+    header: ref === 'A' ? 'Content' : 'Sentiment',
+    label: ref
+  });
+  server.analyzeAgentBatchValues = (_action, batchValues) => {
+    analyzedRowCount = batchValues.length;
+    return batchValues.map(() => 'positive');
+  };
+  server.writeColumnValues = (_columnRef, startRow, values) => ({
+    columnIndex: 3,
+    columnLetter: 'C',
+    rowsWritten: values.length,
+    startRow: startRow,
+    endRow: startRow + values.length - 1
+  });
+  server.SpreadsheetApp = {
+    getActiveSheet() {
+      return {
+        getLastRow() {
+          return 101;
+        },
+        getRange(_row, _column, numRows) {
+          return {
+            getDisplayValues() {
+              return Array.from({ length: numRows }, (_, index) => [`Row ${index + 1}`]);
+            }
+          };
+        }
+      };
+    },
+    flush() {}
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'execute',
+    requestedRowLimit: 40,
+    plan: {
+      actions: [
+        { type: 'analyze_fill', sourceColumn: 'A', targetColumn: 'C', instruction: 'sentiment' }
+      ]
+    },
+    currentActionIndex: 0,
+    currentBatchIndex: 0,
+    actionRuntime: null,
+    executionLog: [],
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  const labels = (result.events || []).map(event => event.label);
+  assert(labels.includes('Rows to process: 40'), 'execute path should cap rows to the requested limit');
+  assert(result.nextState && result.nextState.actionRuntime && result.nextState.actionRuntime.totalRows === 40, 'runtime should keep the capped row limit');
+  assert(analyzedRowCount === 20, 'first batch should still honor batch sizing while respecting the capped total');
+}
+
+function testAgentNormalizesAdjacentInsertAndExplicitColumns(server) {
+  const actions = server.normalizeAgentPlanActions(
+    'สร้างคอลัมน์ใหม่ขึ้นมาข้าง ๆ คอลัมน์ Content แล้วเขียน sentiment ลงคอลัมน์ C',
+    {
+      context: {
+        lastColumn: 4,
+        columns: [
+          { index: 1, letter: 'A', header: 'ID', label: 'A · ID' },
+          { index: 2, letter: 'B', header: 'Name', label: 'B · Name' },
+          { index: 3, letter: 'C', header: 'Content', label: 'C · Content' },
+          { index: 4, letter: 'D', header: 'Notes', label: 'D · Notes' }
+        ]
+      }
+    },
+    [
+      { type: 'insert_column', position: 'CON', headerName: '', sourceColumn: '', targetColumn: '', instruction: '' },
+      { type: 'analyze_fill', position: '', headerName: '', sourceColumn: 'A', targetColumn: 'C', instruction: 'sentiment' }
+    ]
+  );
+
+  assert(actions[0].position === 'D', 'adjacent insert should normalize next to the Content header');
+  assert(actions[1].sourceColumn === 'A', 'explicit source column letter should win');
+  assert(actions[1].targetColumn === 'C', 'explicit target column letter should win');
+}
+
 function testAgentDeleteColumnRepairCreatesDeleteAction(server) {
   server.buildAgentPlan = () => ({
     summary: 'Delete the requested column',
@@ -978,6 +1062,49 @@ function testAgentWorkItemsMapStatuses(server) {
   assert(completeItems.every(item => item.status === 'done'), 'completed panel should mark non-error items done');
 }
 
+async function testAgentStopCancelsBeforeNextLoop(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
+
+  browserSandbox.callServer = async () => ({
+    done: false,
+    events: [{ type: 'status', label: 'Planning next steps', trace: { phase: 'plan' } }],
+    nextState: { phase: 'execute' }
+  });
+  browserSandbox.playAgentEvents = async () => {};
+  browserSandbox.upsertAgentMemory = async () => {};
+  browserSandbox.saveAgentEvents = async (_threadId, events) => {
+    browserSandbox.__savedStopEvents = events;
+  };
+  browserSandbox.trimAgentEvents = async () => {};
+  browserSandbox.finalizeAgentRun = async (_threadId, message) => {
+    browserSandbox.__finalMessage = message;
+    browserSandbox.currentAgentState = null;
+    browserSandbox.currentAgentCancelRequested = false;
+  };
+
+  vm.runInContext(
+    `currentMode = 'agent';
+     isTyping = true;
+     currentAgentState = { phase: 'plan' };
+     currentAgentWorkRun = { events: [], complete: false, stopping: false, panel: null };`,
+    browserSandbox
+  );
+
+  const stopRequested = vm.runInContext('requestAgentStop()', browserSandbox);
+  assert(stopRequested === true, 'requestAgentStop should accept an active agent run');
+  assert(vm.runInContext('currentAgentCancelRequested', browserSandbox) === true, 'stop request should set cancel flag');
+  assert(vm.runInContext('currentAgentWorkRun.stopping', browserSandbox) === true, 'stop request should mark the work panel as stopping');
+
+  await browserSandbox.runAgentLoop('thread-1', { phase: 'plan' });
+
+  assert(String(browserSandbox.__finalMessage || '').includes('ผมหยุดการทำงานไว้แล้วครับ'), 'run loop should finalize with a stopped message');
+  assert(Array.isArray(browserSandbox.__savedStopEvents) && browserSandbox.__savedStopEvents[0].label === 'Stopping requested', 'run loop should persist a stopping event');
+}
+
 const cases = [
   ['responses body uses text.format', testResponsesBodyUsesTextFormat],
   ['chat body keeps response_format', testChatBodyKeepsResponseFormat],
@@ -993,10 +1120,13 @@ const cases = [
   ['agent delete fails clearly when target cannot resolve', testAgentDeleteColumnFailsClearlyWhenTargetCannotResolve],
   ['agent builds natural final response', testAgentBuildsNaturalFinalResponse],
   ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
+  ['agent execute respects requested row limit', testAgentExecuteRespectsRequestedRowLimit],
+  ['agent normalizes adjacent insert and explicit columns', testAgentNormalizesAdjacentInsertAndExplicitColumns],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
   ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread],
-  ['agent work items map statuses', testAgentWorkItemsMapStatuses]
+  ['agent work items map statuses', testAgentWorkItemsMapStatuses],
+  ['agent stop cancels before next loop', testAgentStopCancelsBeforeNextLoop]
 ];
 
 try {
