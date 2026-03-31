@@ -28,9 +28,10 @@ const AGENT_MODEL_CONFIG = {
 const AGENT_MODE_SYSTEM_PROMPT = [
   'You are RealUniverse Agent operating inside Google Sheets.',
   'You always know you are working on the user\'s currently active sheet.',
-  'You can inspect the sheet, resolve columns by letter or header, insert a column, and write results back into the sheet.',
+  'You can inspect the sheet, resolve columns by letter or header, insert a column, delete a column, and write results back into the sheet.',
   'Plan only with the supported actions below:',
   '- insert_column: insert a new column at a position and set its header',
+  '- delete_column: delete an existing column by letter or header',
   '- analyze_fill: read a source column row-by-row and write one result per row to a target column',
   'If the user only asks a question, answer directly with no actions.',
   'Return a JSON object with keys: summary, finalResponse, actions.',
@@ -42,8 +43,12 @@ const AGENT_MODE_SYSTEM_PROMPT = [
 
 const AGENT_OPERATIONAL_KEYWORDS = [
   'write', 'fill', 'insert', 'create column', 'add column', 'append column', 'update', 'analyze', 'classify', 'categorize', 'tag', 'score', 'sentiment',
-  'เขียน', 'ใส่', 'เพิ่ม', 'สร้างคอลัมน์', 'สร้างคอลั่ม', 'เพิ่มคอลัมน์', 'เพิ่มคอลั่ม', 'แทรกคอลัมน์', 'วิเคราะห์', 'จัดหมวด', 'ทำ sentiment', 'ลงคอลัมน์', 'ลงคอลั่ม'
+  'delete', 'remove', 'drop column', 'delete column',
+  'เขียน', 'ใส่', 'เพิ่ม', 'สร้างคอลัมน์', 'สร้างคอลั่ม', 'เพิ่มคอลัมน์', 'เพิ่มคอลั่ม', 'แทรกคอลัมน์', 'วิเคราะห์', 'จัดหมวด', 'ทำ sentiment', 'ลงคอลัมน์', 'ลงคอลั่ม', 'ลบ', 'ลบออก', 'ลบคอลัมน์', 'ลบคอลั่ม', 'สร้างใหม่'
 ];
+
+const AGENT_CREATE_COLUMN_KEYWORDS = ['create', 'add', 'insert', 'new column', 'สร้าง', 'เพิ่ม', 'แทรก', 'สร้างใหม่'];
+const AGENT_DELETE_COLUMN_KEYWORDS = ['delete', 'remove', 'drop', 'ลบ', 'ลบออก'];
 
 const MODEL_REGISTRY = {
   'gpt-4.1': {
@@ -826,6 +831,39 @@ function insertColumnAt(position, headerName) {
   };
 }
 
+function resolveExistingColumnReference(input, context) {
+  const schema = context || getActiveSheetSchema();
+  const normalizedInput = cleanCellData(input || '').toLowerCase();
+
+  if (!normalizedInput) {
+    throw new Error('Column reference is required');
+  }
+
+  const numericColumn = convertToColumnNumber(normalizedInput);
+  if (numericColumn && numericColumn >= 1 && numericColumn <= schema.lastColumn) {
+    return schema.columns.find(column => column.index === numericColumn) || null;
+  }
+
+  return schema.columns.find(column => cleanCellData(column.header || '').toLowerCase() === normalizedInput) || null;
+}
+
+function deleteColumnAt(columnRef) {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const schema = getActiveSheetSchema();
+  const resolvedColumn = resolveExistingColumnReference(columnRef, schema);
+
+  if (!resolvedColumn) {
+    throw new Error('Column not found for delete: ' + columnRef);
+  }
+
+  sheet.deleteColumn(resolvedColumn.index);
+  return {
+    columnIndex: resolvedColumn.index,
+    columnLetter: resolvedColumn.letter,
+    headerName: resolvedColumn.header || ''
+  };
+}
+
 function writeColumnValues(columnRef, startRow, values) {
   const resolvedColumn = resolveColumnReference(columnRef);
   const safeValues = Array.isArray(values) ? values : [];
@@ -888,6 +926,158 @@ function isAgentOperationalTask(userPrompt) {
   return AGENT_OPERATIONAL_KEYWORDS.some(keyword => normalizedPrompt.includes(keyword));
 }
 
+function promptIncludesAnyKeyword(prompt, keywords) {
+  const normalizedPrompt = cleanCellData(prompt || '').toLowerCase();
+  if (!normalizedPrompt) return false;
+  return (keywords || []).some(keyword => normalizedPrompt.includes(keyword));
+}
+
+function extractColumnMentions(userPrompt) {
+  const text = String(userPrompt || '');
+  const matches = [];
+  const patterns = [
+    /\bcolumn\s+([A-Z]{1,3})\b/gi,
+    /\bcol(?:umn)?\s+([A-Z]{1,3})\b/gi,
+    /คอลั(?:มน์|่ม)\s*([A-Z]{1,3})/gi
+  ];
+
+  patterns.forEach(pattern => {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      matches.push(match[1].toUpperCase());
+    }
+  });
+
+  return matches;
+}
+
+function findContextColumnByPrompt(userPrompt, context, excludedLetters) {
+  const normalizedPrompt = cleanCellData(userPrompt || '').toLowerCase();
+  const excluded = new Set((excludedLetters || []).map(letter => String(letter || '').toUpperCase()));
+  if (!normalizedPrompt || !context || !Array.isArray(context.columns)) return null;
+
+  return context.columns.find(column => {
+    const header = cleanCellData(column.header || '').toLowerCase();
+    if (!header || excluded.has(String(column.letter || '').toUpperCase())) return false;
+    return normalizedPrompt.includes(header);
+  }) || null;
+}
+
+function inferAgentTargetColumn(userPrompt, context) {
+  const mentions = extractColumnMentions(userPrompt);
+  if (mentions.length > 0) {
+    const lastMention = mentions[mentions.length - 1];
+    const existingColumn = context && Array.isArray(context.columns)
+      ? context.columns.find(column => column.letter === lastMention)
+      : null;
+    return existingColumn || {
+      index: convertToColumnNumber(lastMention),
+      letter: lastMention,
+      header: '',
+      label: lastMention
+    };
+  }
+
+  return findContextColumnByPrompt(userPrompt, context, []);
+}
+
+function inferAgentSourceColumn(userPrompt, context, targetColumn) {
+  const mentions = extractColumnMentions(userPrompt);
+  if (mentions.length > 1) {
+    const targetLetter = targetColumn && targetColumn.letter ? String(targetColumn.letter).toUpperCase() : '';
+    const candidateLetter = mentions.find(letter => String(letter).toUpperCase() !== targetLetter);
+    if (candidateLetter) {
+      const existingColumn = context && Array.isArray(context.columns)
+        ? context.columns.find(column => column.letter === candidateLetter)
+        : null;
+      if (existingColumn) return existingColumn;
+    }
+  }
+
+  const headerMatch = findContextColumnByPrompt(userPrompt, context, [
+    targetColumn && targetColumn.letter ? targetColumn.letter : ''
+  ]);
+  if (headerMatch) return headerMatch;
+
+  if (context && Array.isArray(context.columns)) {
+    return context.columns.find(column => column.letter !== (targetColumn && targetColumn.letter)) || context.columns[0] || null;
+  }
+
+  return null;
+}
+
+function shouldAgentInsertTargetColumn(userPrompt, targetColumn, context) {
+  if (!targetColumn) return false;
+  return promptIncludesAnyKeyword(userPrompt, AGENT_CREATE_COLUMN_KEYWORDS);
+}
+
+function inferAgentHeaderName(userPrompt) {
+  if (/sentiment/i.test(String(userPrompt || ''))) return 'Sentiment';
+  return '';
+}
+
+function repairOperationalAgentPlan(userPrompt, agentState, plan) {
+  const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
+  const existingPlan = plan || { actions: [] };
+
+  if (Array.isArray(existingPlan.actions) && existingPlan.actions.length > 0) {
+    return existingPlan;
+  }
+
+  if (promptIncludesAnyKeyword(userPrompt, AGENT_DELETE_COLUMN_KEYWORDS)) {
+    const targetColumn = inferAgentTargetColumn(userPrompt, context);
+    if (!targetColumn || !resolveExistingColumnReference(targetColumn.letter, context)) {
+      return null;
+    }
+
+    return {
+      summary: existingPlan.summary || ('Delete column ' + targetColumn.letter),
+      finalResponse: existingPlan.finalResponse || ('Deleting column ' + targetColumn.letter + '.'),
+      actions: [
+        {
+          type: 'delete_column',
+          position: '',
+          headerName: '',
+          sourceColumn: '',
+          targetColumn: targetColumn.letter,
+          instruction: ''
+        }
+      ]
+    };
+  }
+
+  const targetColumn = inferAgentTargetColumn(userPrompt, context);
+  const sourceColumn = inferAgentSourceColumn(userPrompt, context, targetColumn);
+  if (!sourceColumn || !targetColumn) return null;
+
+  const actions = [];
+  if (shouldAgentInsertTargetColumn(userPrompt, targetColumn, context)) {
+    actions.push({
+      type: 'insert_column',
+      position: targetColumn.letter,
+      headerName: inferAgentHeaderName(userPrompt),
+      sourceColumn: '',
+      targetColumn: '',
+      instruction: ''
+    });
+  }
+
+  actions.push({
+    type: 'analyze_fill',
+    position: '',
+    headerName: '',
+    sourceColumn: sourceColumn.letter,
+    targetColumn: targetColumn.letter,
+    instruction: cleanCellData(userPrompt || '')
+  });
+
+  return {
+    summary: existingPlan.summary || ('Analyze column ' + sourceColumn.letter + ' and write results to column ' + targetColumn.letter),
+    finalResponse: existingPlan.finalResponse || ('I will analyze column ' + sourceColumn.letter + ' and write the results to column ' + targetColumn.letter + '.'),
+    actions: actions
+  };
+}
+
 function getAgentPlanningSystemPrompt(strictExecution) {
   if (!strictExecution) return AGENT_MODE_SYSTEM_PROMPT;
 
@@ -922,7 +1112,7 @@ function buildAgentPlan(userPrompt, agentState, options = {}) {
     summary: cleanCellData(parsed.summary || 'Plan ready'),
     finalResponse: cleanCellData(parsed.finalResponse || ''),
     actions: safeActions
-      .filter(action => action && ['insert_column', 'analyze_fill'].includes(action.type))
+      .filter(action => action && ['insert_column', 'delete_column', 'analyze_fill'].includes(action.type))
       .map(action => ({
         type: action.type,
         position: cleanCellData(action.position || ''),
@@ -1024,9 +1214,17 @@ function processRealUniverseAgentStep(agentState) {
   if (phase === 'plan') {
     const isOperationalTask = isAgentOperationalTask(state.userPrompt || '');
     const retryCount = Number(state.planRetryCount || 0);
-    const plan = buildAgentPlan(state.userPrompt || '', state, {
+    let plan = buildAgentPlan(state.userPrompt || '', state, {
       strictExecution: isOperationalTask && retryCount > 0
     });
+    let planRepaired = false;
+    if (isOperationalTask && !plan.actions.length) {
+      const repairedPlan = repairOperationalAgentPlan(state.userPrompt || '', state, plan);
+      if (repairedPlan && Array.isArray(repairedPlan.actions) && repairedPlan.actions.length) {
+        plan = repairedPlan;
+        planRepaired = true;
+      }
+    }
     const events = [
       createAgentTraceEvent(state, 'status', 'Planning next steps', {
         intentType: isOperationalTask ? 'operational' : 'ask',
@@ -1035,9 +1233,20 @@ function processRealUniverseAgentStep(agentState) {
       createAgentTraceEvent(state, 'status', plan.summary || 'Plan ready', {
         intentType: isOperationalTask ? 'operational' : 'ask',
         planSummary: plan.summary || 'Plan ready',
-        actions: plan.actions
+        actions: plan.actions,
+        repaired: planRepaired
       })
     ];
+
+    if (planRepaired) {
+      events.push(createAgentTraceEvent(state, 'status', 'Recovered executable steps', {
+        intentType: 'operational',
+        retryCount: retryCount,
+        planSummary: plan.summary || 'Recovered executable steps',
+        actions: plan.actions,
+        repaired: true
+      }));
+    }
 
     if (isOperationalTask && !plan.actions.length) {
       if (retryCount < 1) {
@@ -1148,6 +1357,39 @@ function processRealUniverseAgentStep(agentState) {
           }),
           createAgentTraceEvent(state, 'tool_result', 'Created header "' + (result.headerName || result.columnLetter) + '"', {
             toolName: 'insertColumnAt',
+            toolResult: result
+          })
+        ],
+        nextState: nextState
+      };
+      return response;
+    }
+
+    if (action.type === 'delete_column') {
+      const result = deleteColumnAt(action.targetColumn);
+      const updatedContext = getActiveSheetContext();
+      const executionLog = (state.executionLog || []).concat(
+        'Deleted column ' + result.columnLetter + '.'
+      );
+
+      const nextState = advanceAgentState(state, {
+        context: updatedContext,
+        currentActionIndex: state.currentActionIndex + 1,
+        currentBatchIndex: 0,
+        actionRuntime: null,
+        executionLog: executionLog
+      });
+      const response = {
+        done: false,
+        events: [
+          createAgentTraceEvent(state, 'tool_call', 'Deleting column ' + result.columnLetter, {
+            toolName: 'deleteColumnAt',
+            toolInput: {
+              targetColumn: action.targetColumn
+            }
+          }),
+          createAgentTraceEvent(state, 'tool_result', 'Deleted column ' + result.columnLetter, {
+            toolName: 'deleteColumnAt',
             toolResult: result
           })
         ],
@@ -2505,6 +2747,102 @@ body {
     font-size: 10px;
     line-height: 1.4;
 }
+.agent-work-panel {
+    margin-bottom: 12px;
+    border: 1px solid #dbe5f0;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.88);
+    box-shadow: 0 8px 22px rgba(148, 163, 184, 0.12);
+    overflow: hidden;
+}
+.agent-work-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px 10px;
+    border-bottom: 1px solid #eef2f6;
+}
+.agent-work-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+.agent-work-subtitle {
+    font-size: 10px;
+    color: #64748b;
+    margin-top: 2px;
+}
+.agent-work-status {
+    font-size: 10px;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.agent-work-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px 14px;
+}
+.agent-work-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.agent-work-marker {
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    flex: 0 0 18px;
+    margin-top: 1px;
+    border: 1px solid #cfd7e3;
+    background: #f8fafc;
+    position: relative;
+}
+.agent-work-marker::after {
+    content: '';
+    position: absolute;
+    inset: 4px;
+    border-radius: 999px;
+    background: transparent;
+}
+.agent-work-item.done .agent-work-marker {
+    border-color: #c7f1d8;
+    background: #effcf4;
+}
+.agent-work-item.done .agent-work-marker::after {
+    background: #22c55e;
+}
+.agent-work-item.running .agent-work-marker {
+    border-color: #c7d8ff;
+    background: #eef4ff;
+}
+.agent-work-item.running .agent-work-marker::after {
+    background: #3b82f6;
+}
+.agent-work-item.failed .agent-work-marker {
+    border-color: #fecaca;
+    background: #fff1f2;
+}
+.agent-work-item.failed .agent-work-marker::after {
+    background: #ef4444;
+}
+.agent-work-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.agent-work-step {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+.agent-work-meta {
+    font-size: 10px;
+    color: #64748b;
+}
 .message-content strong {
     font-weight: 600;
     color: #1d1d1f;
@@ -3609,6 +3947,7 @@ let activeAgentThreadId = null;
 let currentAgentState = null;
 let hasBootstrappedRealUniverseApp = false;
 let agentLogCurrentThreadId = null;
+let currentAgentWorkRun = null;
 
 const AGENT_DB_NAME = 'realuniverse-agent-v1';
 const AGENT_DB_VERSION = 1;
@@ -4010,6 +4349,130 @@ function addAgentEventMessage(eventOrLabel) {
    scrollToBottom();
 }
 
+function buildAgentWorkItems(events, isComplete) {
+   const safeEvents = Array.isArray(events) ? events : [];
+   const items = safeEvents.map(event => ({
+       label: event && event.label ? event.label : '',
+       status: event && event.type === 'error' ? 'failed' : 'done',
+       phase: event && event.trace && event.trace.phase ? event.trace.phase : ''
+   })).filter(item => item.label);
+
+   if (!isComplete && !items.some(item => item.status === 'failed')) {
+       for (let index = items.length - 1; index >= 0; index -= 1) {
+           if (items[index].status !== 'failed') {
+               items[index].status = 'running';
+               break;
+           }
+       }
+   }
+
+   return items;
+}
+
+function ensureAgentWorkPanel() {
+   const messages = document.getElementById('messages');
+   if (!messages) return null;
+
+   if (currentAgentWorkRun && currentAgentWorkRun.panel && currentAgentWorkRun.panel.isConnected) {
+       return currentAgentWorkRun.panel;
+   }
+
+   const emptyState = messages.querySelector('.empty-state');
+   if (emptyState) emptyState.remove();
+
+   const panel = document.createElement('div');
+   panel.className = 'agent-work-panel';
+   panel.innerHTML = [
+       '<div class="agent-work-header">',
+           '<div>',
+               '<div class="agent-work-title">Agent is working</div>',
+               '<div class="agent-work-subtitle" id="agentWorkSubtitle">Preparing next steps</div>',
+           '</div>',
+           '<div class="agent-work-status" id="agentWorkStatus">LIVE</div>',
+       '</div>',
+       '<div class="agent-work-list" id="agentWorkList"></div>'
+   ].join('');
+   messages.appendChild(panel);
+   return panel;
+}
+
+function renderAgentWorkPanel() {
+   if (!currentAgentWorkRun) return;
+   const panel = ensureAgentWorkPanel();
+   if (!panel) return;
+
+   currentAgentWorkRun.panel = panel;
+   const subtitle = panel.querySelector('#agentWorkSubtitle');
+   const status = panel.querySelector('#agentWorkStatus');
+   const list = panel.querySelector('#agentWorkList');
+   const items = buildAgentWorkItems(currentAgentWorkRun.events, currentAgentWorkRun.complete);
+
+   if (subtitle) {
+       subtitle.textContent = currentAgentWorkRun.question || 'Working on the active sheet';
+   }
+   if (status) {
+       status.textContent = currentAgentWorkRun.complete ? 'DONE' : 'LIVE';
+   }
+   if (list) {
+       list.innerHTML = '';
+       items.forEach(item => {
+           const row = document.createElement('div');
+           row.className = 'agent-work-item ' + item.status;
+
+           const marker = document.createElement('div');
+           marker.className = 'agent-work-marker';
+
+           const copy = document.createElement('div');
+           copy.className = 'agent-work-copy';
+
+           const step = document.createElement('div');
+           step.className = 'agent-work-step';
+           step.textContent = item.label;
+
+           const meta = document.createElement('div');
+           meta.className = 'agent-work-meta';
+           meta.textContent = item.status === 'running'
+               ? 'Running'
+               : item.status === 'failed'
+                   ? 'Failed'
+                   : 'Done';
+
+           copy.appendChild(step);
+           copy.appendChild(meta);
+           row.appendChild(marker);
+           row.appendChild(copy);
+           list.appendChild(row);
+       });
+   }
+
+   scrollToBottom();
+}
+
+function startAgentWorkPanel(question) {
+   currentAgentWorkRun = {
+       question: question,
+       events: [],
+       complete: false,
+       panel: null
+   };
+   renderAgentWorkPanel();
+}
+
+function appendAgentWorkEvents(events) {
+   if (!currentAgentWorkRun) {
+       startAgentWorkPanel('Working on the active sheet');
+   }
+   currentAgentWorkRun.events = currentAgentWorkRun.events.concat(Array.isArray(events) ? events : []);
+   renderAgentWorkPanel();
+}
+
+function clearAgentWorkPanel() {
+   if (currentAgentWorkRun && currentAgentWorkRun.panel && typeof currentAgentWorkRun.panel.remove === 'function') {
+       currentAgentWorkRun.panel.remove();
+   }
+   currentAgentWorkRun = null;
+}
+
 function stringifyAgentLogValue(value) {
    if (value == null || value === '') return '';
    if (typeof value === 'string') return value;
@@ -4261,11 +4724,8 @@ async function clearAgentLog() {
 async function playAgentEvents(threadId, events) {
    if (!Array.isArray(events) || events.length === 0) return;
 
+   appendAgentWorkEvents(events);
    for (const event of events) {
-       const label = event && event.label ? event.label : '';
-       if (label) {
-           addAgentEventMessage(event);
-       }
        await saveAgentEvents(threadId, [event]);
        await trimAgentEvents(threadId);
        await new Promise(resolve => setTimeout(resolve, 180));
@@ -4273,6 +4733,10 @@ async function playAgentEvents(threadId, events) {
 }
 
 async function finalizeAgentRun(threadId, finalMessage) {
+   if (currentAgentWorkRun) {
+       currentAgentWorkRun.complete = true;
+       renderAgentWorkPanel();
+   }
    if (finalMessage) {
        addMessage(finalMessage, 'bot', false);
        await saveAgentTurn(threadId, 'agent', 'reply', finalMessage);
@@ -4280,6 +4744,7 @@ async function finalizeAgentRun(threadId, finalMessage) {
 
    await compactAgentThread(threadId);
    currentAgentState = null;
+   clearAgentWorkPanel();
 }
 
 async function runAgentLoop(threadId, agentState) {
@@ -4307,6 +4772,7 @@ async function sendAgentMessage(question) {
    hideTypingIndicator();
 
    await saveAgentTurn(thread.id, 'user', 'prompt', question);
+   startAgentWorkPanel(question);
 
    const initialState = {
        threadId: thread.id,
@@ -5075,6 +5541,7 @@ function sendMessage() {
    if (currentMode === 'agent') {
        sendAgentMessage(question)
            .catch(error => {
+               clearAgentWorkPanel();
                addMessage('เกิดข้อผิดพลาด: ' + error.toString(), 'bot', false);
            })
            .finally(() => {

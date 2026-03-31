@@ -51,7 +51,9 @@ function createAppsScriptSandbox() {
     },
     getDataRange() {
       return fakeRange;
-    }
+    },
+    insertColumnBefore() {},
+    deleteColumn() {}
   };
 
   const fakeSpreadsheet = {
@@ -359,7 +361,7 @@ function testAgentClientCapabilityFlow(server) {
   assert(nodes.get('statusText').textContent === 'Agent • GPT-5.4 • Extra High', 'agent status should show selected model and reasoning');
 }
 
-function testAgentOperationalPlanRetriesBeforeCompleting(server) {
+function testAgentOperationalPlanRepairsIntoExecute(server) {
   let planCallCount = 0;
   server.buildAgentPlan = () => {
     planCallCount += 1;
@@ -372,14 +374,21 @@ function testAgentOperationalPlanRetriesBeforeCompleting(server) {
     executionLog: [],
     planRetryCount: 0,
     selectedModel: 'gpt-5.4',
-    reasoningEffort: 'high'
+    reasoningEffort: 'high',
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 8,
+      columnCount: 1,
+      columns: [{ index: 1, letter: 'A', header: 'content', label: 'content' }]
+    }
   });
 
   assert(planCallCount === 1, 'plan should run once per step invocation');
-  assert(result.done === false, 'operational task should retry instead of completing immediately');
-  assert(result.nextState && result.nextState.phase === 'plan', 'retry should stay in planning phase');
-  assert(result.nextState.planRetryCount === 1, 'retry count should increment after first empty action plan');
-  assert((result.events || []).some(event => event.label === 'Refining executable steps'), 'retry path should surface refining status');
+  assert(result.done === false, 'operational task should continue after repair');
+  assert(result.nextState && result.nextState.phase === 'execute', 'repair should advance directly to execute');
+  assert(result.nextState.plan.actions.length === 1, 'repair should build one executable write action');
+  assert(result.nextState.plan.actions[0].type === 'analyze_fill', 'repair should produce analyze_fill action');
+  assert((result.events || []).some(event => event.label === 'Recovered executable steps'), 'repair path should surface recovered status');
 }
 
 function testAgentOperationalPlanFailsClearlyAfterRetry(server) {
@@ -391,16 +400,49 @@ function testAgentOperationalPlanFailsClearlyAfterRetry(server) {
 
   const result = server.processRealUniverseAgentStep({
     phase: 'plan',
-    userPrompt: 'วิเคราะห์ content แล้วเขียน sentiment ลงคอลัมน์ C',
+    userPrompt: 'ช่วยวิเคราะห์ sentiment ให้หน่อย',
     executionLog: [],
     planRetryCount: 1,
     selectedModel: 'gpt-5.4',
-    reasoningEffort: 'high'
+    reasoningEffort: 'high',
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 8,
+      columnCount: 1,
+      columns: [{ index: 1, letter: 'A', header: 'content', label: 'content' }]
+    }
   });
 
   assert(result.done === true, 'operational task should stop after strict re-plan fails');
   assert(String(result.finalMessage || '').includes('ยังสร้างขั้นตอนที่รันได้ไม่สำเร็จ'), 'failure message should explain execution plan could not be built');
   assert((result.events || []).some(event => event.type === 'error'), 'failure path should emit an error event');
+}
+
+function testAgentOperationalPlanStillRetriesWhenRepairCannotResolve(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'Preparing sentiment write',
+    finalResponse: 'I will analyze sentiment.',
+    actions: []
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'ช่วยวิเคราะห์ sentiment ให้หน่อย',
+    executionLog: [],
+    planRetryCount: 0,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 8,
+      columnCount: 1,
+      columns: [{ index: 1, letter: 'A', header: 'content', label: 'content' }]
+    }
+  });
+
+  assert(result.done === false, 'unresolved operational task should still retry once');
+  assert(result.nextState && result.nextState.phase === 'plan', 'retry should stay in planning phase when repair cannot resolve');
+  assert(result.nextState.planRetryCount === 1, 'retry count should increment');
 }
 
 function testAgentOperationalPlanAdvancesToExecute(server) {
@@ -479,6 +521,116 @@ function testAgentExecuteEmitsResolutionEvents(server) {
   assert(labels.includes('Resolved target column C'), 'execute path should report resolved target column');
   assert(labels.includes('Rows to process: 2'), 'execute path should report row count before writing');
   assert(labels.some(label => label.includes('Wrote results to C2:C3')), 'execute path should report written range');
+}
+
+function testAgentDeleteColumnRepairCreatesDeleteAction(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'Delete the requested column',
+    finalResponse: 'Deleting column C.',
+    actions: []
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'ลบคอลัมน์ C ให้หน่อย',
+    executionLog: [],
+    planRetryCount: 0,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 8,
+      columnCount: 3,
+      lastColumn: 3,
+      columns: [
+        { index: 1, letter: 'A', header: 'content', label: 'content' },
+        { index: 2, letter: 'B', header: 'sentiment', label: 'sentiment' },
+        { index: 3, letter: 'C', header: 'notes', label: 'notes' }
+      ]
+    }
+  });
+
+  assert(result.done === false, 'delete request should continue after repair');
+  assert(result.nextState && result.nextState.phase === 'execute', 'delete repair should advance to execute');
+  assert(result.nextState.plan.actions[0].type === 'delete_column', 'delete repair should produce delete action');
+  assert(result.nextState.plan.actions[0].targetColumn === 'C', 'delete repair should target requested column');
+}
+
+function testAgentDeleteColumnExecutes(server) {
+  const deletedColumns = [];
+  server.SpreadsheetApp = {
+    getActiveSheet() {
+      return {
+        getSheetId() {
+          return 1;
+        },
+        getName() {
+          return 'Sheet1';
+        },
+        getLastColumn() {
+          return 3;
+        },
+        getLastRow() {
+          return 2;
+        },
+        getMaxColumns() {
+          return 26;
+        },
+        getRange() {
+          return {
+            getDisplayValues() {
+              return [['content', 'sentiment', 'notes']];
+            }
+          };
+        },
+        deleteColumn(index) {
+          deletedColumns.push(index);
+        }
+      };
+    },
+    getActiveSpreadsheet() {
+      return {
+        getId() {
+          return 'spreadsheet-id';
+        },
+        getName() {
+          return 'Spreadsheet';
+        }
+      };
+    },
+    flush() {}
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'execute',
+    plan: {
+      actions: [
+        { type: 'delete_column', targetColumn: 'C' }
+      ]
+    },
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 1,
+      columnCount: 3,
+      lastColumn: 3,
+      columns: [
+        { index: 1, letter: 'A', header: 'content', label: 'content' },
+        { index: 2, letter: 'B', header: 'sentiment', label: 'sentiment' },
+        { index: 3, letter: 'C', header: 'notes', label: 'notes' }
+      ]
+    },
+    currentActionIndex: 0,
+    currentBatchIndex: 0,
+    actionRuntime: null,
+    executionLog: [],
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(deletedColumns.length === 1 && deletedColumns[0] === 3, 'delete action should remove the requested column index');
+  const labels = (result.events || []).map(event => event.label);
+  assert(labels.includes('Deleting column C'), 'delete execute should emit tool call label');
+  assert(labels.includes('Deleted column C'), 'delete execute should emit tool result label');
 }
 
 function testAgentPlanEventsIncludeStructuredTrace(server) {
@@ -630,18 +782,44 @@ async function testClearAgentThreadDataDeletesOnlyTargetThread(server) {
   assert(deleted.threads.length === 1 && deleted.threads[0] === 'thread-1', 'clear log should delete only target thread record');
 }
 
+function testAgentWorkItemsMapStatuses(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
+
+  browserSandbox.__testEvents = [
+    { type: 'status', label: 'Planning next steps', trace: { phase: 'plan' } },
+    { type: 'tool_call', label: 'Analyzing rows 2-21 from column A', trace: { phase: 'execute' } },
+    { type: 'error', label: 'Could not write results', trace: { phase: 'execute' } }
+  ];
+
+  const activeItems = vm.runInContext('buildAgentWorkItems(__testEvents, false)', browserSandbox);
+  assert(activeItems[0].status === 'done', 'completed earlier steps should stay done');
+  assert(activeItems[1].status === 'done', 'tool call should be marked done once a later event exists');
+  assert(activeItems[2].status === 'failed', 'error event should be marked failed');
+
+  const completeItems = vm.runInContext('buildAgentWorkItems(__testEvents.slice(0, 2), true)', browserSandbox);
+  assert(completeItems.every(item => item.status === 'done'), 'completed panel should mark non-error items done');
+}
+
 const cases = [
   ['responses body uses text.format', testResponsesBodyUsesTextFormat],
   ['chat body keeps response_format', testChatBodyKeepsResponseFormat],
   ['agent model config includes agent support', testAgentModelUiConfig],
   ['agent client exposes model and reasoning flow', testAgentClientCapabilityFlow],
-  ['agent operational plan retries before completing', testAgentOperationalPlanRetriesBeforeCompleting],
+  ['agent operational plan repairs into execute', testAgentOperationalPlanRepairsIntoExecute],
+  ['agent unresolved operational plan retries once', testAgentOperationalPlanStillRetriesWhenRepairCannotResolve],
   ['agent operational plan fails clearly after retry', testAgentOperationalPlanFailsClearlyAfterRetry],
   ['agent operational plan advances to execute', testAgentOperationalPlanAdvancesToExecute],
+  ['agent delete repair creates delete action', testAgentDeleteColumnRepairCreatesDeleteAction],
+  ['agent delete action executes', testAgentDeleteColumnExecutes],
   ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
-  ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread]
+  ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread],
+  ['agent work items map statuses', testAgentWorkItemsMapStatuses]
 ];
 
 try {
