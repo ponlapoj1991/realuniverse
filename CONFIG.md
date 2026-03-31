@@ -49,6 +49,7 @@ const AGENT_OPERATIONAL_KEYWORDS = [
 
 const AGENT_CREATE_COLUMN_KEYWORDS = ['create', 'add', 'insert', 'new column', 'สร้าง', 'เพิ่ม', 'แทรก', 'สร้างใหม่'];
 const AGENT_DELETE_COLUMN_KEYWORDS = ['delete', 'remove', 'drop', 'ลบ', 'ลบออก'];
+const AGENT_ADJACENT_COLUMN_KEYWORDS = ['next to', 'beside', 'after', 'adjacent', 'ข้าง', 'ข้างๆ', 'ข้าง ๆ', 'ถัดจาก'];
 
 const MODEL_REGISTRY = {
   'gpt-4.1': {
@@ -963,6 +964,37 @@ function findContextColumnByPrompt(userPrompt, context, excludedLetters) {
   }) || null;
 }
 
+function findContextColumnByPrefix(input, context, excludedLetters) {
+  const normalizedInput = cleanCellData(input || '').toLowerCase();
+  const excluded = new Set((excludedLetters || []).map(letter => String(letter || '').toUpperCase()));
+  if (!normalizedInput || !context || !Array.isArray(context.columns)) return null;
+
+  const matches = context.columns.filter(column => {
+    const letter = String(column.letter || '').toUpperCase();
+    if (excluded.has(letter)) return false;
+    const header = cleanCellData(column.header || '').toLowerCase();
+    const label = cleanCellData(column.label || '').toLowerCase();
+    return (header && header.startsWith(normalizedInput)) || (label && label.startsWith(normalizedInput));
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveAgentColumnToken(input, context, excludedLetters) {
+  const normalizedInput = cleanCellData(input || '');
+  if (!normalizedInput) return null;
+
+  const resolvedExact = resolveExistingColumnReference(normalizedInput, context);
+  if (resolvedExact && !(excludedLetters || []).includes(String(resolvedExact.letter || '').toUpperCase())) {
+    return resolvedExact;
+  }
+
+  const resolvedPrefix = findContextColumnByPrefix(normalizedInput, context, excludedLetters);
+  if (resolvedPrefix) return resolvedPrefix;
+
+  return null;
+}
+
 function inferAgentTargetColumn(userPrompt, context) {
   const mentions = extractColumnMentions(userPrompt);
   if (mentions.length > 0) {
@@ -983,8 +1015,15 @@ function inferAgentTargetColumn(userPrompt, context) {
 
 function inferAgentSourceColumn(userPrompt, context, targetColumn) {
   const mentions = extractColumnMentions(userPrompt);
+  const targetLetter = targetColumn && targetColumn.letter ? String(targetColumn.letter).toUpperCase() : '';
+  if (mentions.length === 1 && String(mentions[0] || '').toUpperCase() !== targetLetter) {
+    const existingSingleMention = context && Array.isArray(context.columns)
+      ? context.columns.find(column => column.letter === String(mentions[0] || '').toUpperCase())
+      : null;
+    if (existingSingleMention) return existingSingleMention;
+  }
+
   if (mentions.length > 1) {
-    const targetLetter = targetColumn && targetColumn.letter ? String(targetColumn.letter).toUpperCase() : '';
     const candidateLetter = mentions.find(letter => String(letter).toUpperCase() !== targetLetter);
     if (candidateLetter) {
       const existingColumn = context && Array.isArray(context.columns)
@@ -1012,13 +1051,51 @@ function shouldAgentInsertTargetColumn(userPrompt, targetColumn, context) {
 }
 
 function inferAgentHeaderName(userPrompt) {
+  const promptText = String(userPrompt || '');
+  const explicitNameMatch = promptText.match(/ชื่อ\s+([A-Za-z0-9 _-]{2,})/i);
+  if (explicitNameMatch && explicitNameMatch[1]) {
+    return cleanCellData(explicitNameMatch[1]);
+  }
   if (/sentiment/i.test(String(userPrompt || ''))) return 'Sentiment';
   return '';
+}
+
+function extractAgentRequestedRowLimit(userPrompt) {
+  const promptText = String(userPrompt || '');
+  const patterns = [
+    /(\d{1,4})\s*(?:rows?|records?|entries|contents?|content|แถว|รายการ|คอนเทนต์|ข้อความ)/gi,
+    /(?:first|top|แค่|เพียง|ขอแค่|แรก)\s*(\d{1,4})/gi
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(promptText)) !== null) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  }
+
+  return null;
+}
+
+function inferAgentInsertPosition(userPrompt, context, currentPosition, fallbackTargetColumn) {
+  const adjacentBaseColumn = promptIncludesAnyKeyword(userPrompt, AGENT_ADJACENT_COLUMN_KEYWORDS)
+    ? findContextColumnByPrompt(userPrompt, context, [])
+    : null;
+  if (adjacentBaseColumn) {
+    return getColumnLetter(Math.min((adjacentBaseColumn.index || 0) + 1, (context && context.lastColumn ? context.lastColumn : adjacentBaseColumn.index) + 1));
+  }
+
+  const explicitPosition = resolveAgentColumnToken(currentPosition, context, []);
+  if (explicitPosition) return explicitPosition.letter;
+  if (fallbackTargetColumn && fallbackTargetColumn.letter) return fallbackTargetColumn.letter;
+  return cleanCellData(currentPosition || '');
 }
 
 function normalizeAgentPlanActions(userPrompt, agentState, actions) {
   const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
   const safeActions = Array.isArray(actions) ? actions : [];
+  const inferredTargetColumn = inferAgentTargetColumn(userPrompt, context);
 
   return safeActions.map(action => {
     const normalized = {
@@ -1030,10 +1107,31 @@ function normalizeAgentPlanActions(userPrompt, agentState, actions) {
       instruction: cleanCellData(action && action.instruction || '')
     };
 
+    if (normalized.type === 'insert_column') {
+      normalized.position = inferAgentInsertPosition(userPrompt, context, normalized.position, inferredTargetColumn);
+      if (!normalized.headerName) {
+        normalized.headerName = inferAgentHeaderName(userPrompt);
+      }
+    }
+
     if (normalized.type === 'delete_column' && !normalized.targetColumn) {
       const inferredTarget = inferAgentTargetColumn(userPrompt, context);
       if (inferredTarget && inferredTarget.letter) {
         normalized.targetColumn = inferredTarget.letter;
+      }
+    }
+
+    if (normalized.type === 'analyze_fill') {
+      const resolvedSourceColumn = resolveAgentColumnToken(normalized.sourceColumn, context, [
+        normalized.targetColumn ? String(normalized.targetColumn).toUpperCase() : ''
+      ]);
+      const resolvedTargetColumn = resolveAgentColumnToken(normalized.targetColumn, context, []);
+
+      if (resolvedSourceColumn) {
+        normalized.sourceColumn = resolvedSourceColumn.letter;
+      }
+      if (resolvedTargetColumn) {
+        normalized.targetColumn = resolvedTargetColumn.letter;
       }
     }
 
@@ -1265,6 +1363,7 @@ function processRealUniverseAgentStep(agentState) {
       selectedModel: agentConfig.model,
       reasoningEffort: agentConfig.reasoning,
       planRetryCount: 0,
+      requestedRowLimit: extractAgentRequestedRowLimit(state.userPrompt || ''),
       context: context,
       intentType: intentType,
       executionLog: []
@@ -1505,7 +1604,11 @@ function processRealUniverseAgentStep(agentState) {
         const sourceColumn = resolveColumnReference(action.sourceColumn);
         const targetColumn = resolveColumnReference(action.targetColumn);
         const lastRow = SpreadsheetApp.getActiveSheet().getLastRow();
-        const totalRows = Math.max(lastRow - 1, 0);
+        const availableRows = Math.max(lastRow - 1, 0);
+        const requestedRowLimit = Number(state.requestedRowLimit || 0);
+        const totalRows = requestedRowLimit > 0
+          ? Math.min(availableRows, requestedRowLimit)
+          : availableRows;
         const totalBatches = totalRows === 0 ? 0 : Math.ceil(totalRows / agentConfig.batchSize);
 
         runtime = {
@@ -4049,6 +4152,7 @@ let currentAgentState = null;
 let hasBootstrappedRealUniverseApp = false;
 let agentLogCurrentThreadId = null;
 let currentAgentWorkRun = null;
+let currentAgentCancelRequested = false;
 
 const AGENT_DB_NAME = 'realuniverse-agent-v1';
 const AGENT_DB_VERSION = 1;
@@ -4507,7 +4611,7 @@ function renderAgentWorkPanel() {
    const items = buildAgentWorkItems(currentAgentWorkRun.events, currentAgentWorkRun.complete);
 
    if (subtitle) {
-       subtitle.textContent = 'Working on the active sheet';
+       subtitle.textContent = currentAgentWorkRun.stopping ? 'Stopping after the current step' : 'Working on the active sheet';
    }
    if (list) {
        list.innerHTML = '';
@@ -4549,6 +4653,7 @@ function startAgentWorkPanel(question) {
        question: question,
        events: [],
        complete: false,
+       stopping: false,
        panel: null
    };
    renderAgentWorkPanel();
@@ -4567,6 +4672,21 @@ function clearAgentWorkPanel() {
        currentAgentWorkRun.panel.remove();
    }
    currentAgentWorkRun = null;
+}
+
+function isAgentRunActive() {
+   return currentMode === 'agent' && Boolean(currentAgentState) && isTyping;
+}
+
+function requestAgentStop() {
+   if (!isAgentRunActive()) return false;
+   currentAgentCancelRequested = true;
+   if (currentAgentWorkRun) {
+       currentAgentWorkRun.stopping = true;
+       renderAgentWorkPanel();
+   }
+   updateSendButton();
+   return true;
 }
 
 function stringifyAgentLogValue(value) {
@@ -4831,6 +4951,7 @@ async function playAgentEvents(threadId, events) {
 async function finalizeAgentRun(threadId, finalMessage) {
    if (currentAgentWorkRun) {
        currentAgentWorkRun.complete = true;
+       currentAgentWorkRun.stopping = false;
        renderAgentWorkPanel();
    }
    if (finalMessage) {
@@ -4840,6 +4961,7 @@ async function finalizeAgentRun(threadId, finalMessage) {
 
    await compactAgentThread(threadId);
    currentAgentState = null;
+   currentAgentCancelRequested = false;
    clearAgentWorkPanel();
 }
 
@@ -4847,6 +4969,22 @@ async function runAgentLoop(threadId, agentState) {
    currentAgentState = agentState;
    const response = await callServer('processRealUniverseAgentStep', agentState);
    await playAgentEvents(threadId, response.events || []);
+
+   if (currentAgentCancelRequested && !response.done) {
+       const stopEvent = {
+           type: 'status',
+           label: 'Stopping requested',
+           trace: {
+               phase: agentState && agentState.phase ? agentState.phase : '',
+               eventType: 'status',
+               finalMessage: 'ผมหยุดการทำงานไว้แล้วครับ'
+           }
+       };
+       await saveAgentEvents(threadId, [stopEvent]);
+       await trimAgentEvents(threadId);
+       await finalizeAgentRun(threadId, 'ผมหยุดการทำงานไว้แล้วครับ');
+       return;
+   }
 
    if (response.done) {
        await finalizeAgentRun(threadId, response.finalMessage || '');
@@ -4869,6 +5007,7 @@ async function sendAgentMessage(question) {
 
    await saveAgentTurn(thread.id, 'user', 'prompt', question);
    startAgentWorkPanel(question);
+   currentAgentCancelRequested = false;
 
    const initialState = {
        threadId: thread.id,
@@ -4876,7 +5015,8 @@ async function sendAgentMessage(question) {
        userPrompt: question,
        memorySummary: memorySummary,
        selectedModel: selectedModel,
-       reasoningEffort: selectedReasoning
+       reasoningEffort: selectedReasoning,
+       requestedRowLimit: extractAgentRequestedRowLimit(question)
    };
 
    await upsertAgentMemory(thread.id, 'task_state', initialState);
@@ -5586,11 +5726,13 @@ function stopTyping() {
 
 function updateSendButton() {
    const sendButton = document.getElementById('sendButton');
+   if (!sendButton) return;
    if (isTyping) {
        sendButton.classList.add('spinning');
    } else {
        sendButton.classList.remove('spinning');
    }
+   sendButton.setAttribute('aria-label', isAgentRunActive() ? 'Stop' : 'Send');
 }
 
 function scrollToBottom() {
@@ -5608,6 +5750,10 @@ function sendQuickAction(command) {
 }
 
 function sendMessage() {
+   if (requestAgentStop()) {
+       return;
+   }
+
    if (isTyping) {
        stopTyping();
        return;
@@ -5626,7 +5772,7 @@ function sendMessage() {
    }
 
    input.disabled = true;
-   sendButton.disabled = true;
+   sendButton.disabled = currentMode !== 'agent';
    isTyping = true;
    updateSendButton();
    addMessage(question, 'user', false);
