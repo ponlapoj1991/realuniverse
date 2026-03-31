@@ -5015,8 +5015,7 @@ async function sendAgentMessage(question) {
        userPrompt: question,
        memorySummary: memorySummary,
        selectedModel: selectedModel,
-       reasoningEffort: selectedReasoning,
-       requestedRowLimit: extractAgentRequestedRowLimit(question)
+       reasoningEffort: selectedReasoning
    };
 
    await upsertAgentMemory(thread.id, 'task_state', initialState);

@@ -1105,6 +1105,46 @@ async function testAgentStopCancelsBeforeNextLoop(server) {
   assert(Array.isArray(browserSandbox.__savedStopEvents) && browserSandbox.__savedStopEvents[0].label === 'Stopping requested', 'run loop should persist a stopping event');
 }
 
+async function testAgentSendMessageDoesNotDependOnServerOnlyHelpers(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
+
+  let capturedInitialState = null;
+  browserSandbox.callServer = async functionName => {
+    assert(functionName === 'getActiveSheetContext', 'sendAgentMessage should request active sheet context first');
+    return {
+      spreadsheetId: 'spreadsheet-id',
+      spreadsheetName: 'Spreadsheet',
+      sheetId: 1,
+      sheetName: 'Sheet1'
+    };
+  };
+  browserSandbox.ensureAgentThread = async context => ({
+    id: `${context.spreadsheetId}:${context.sheetId}`,
+    title: 'Agent · Sheet1'
+  });
+  browserSandbox.getAgentPlanningMemory = async () => 'recent context';
+  browserSandbox.getSelectedModelForMode = () => 'gpt-5.4';
+  browserSandbox.getReasoningEffortForMode = () => 'medium';
+  browserSandbox.hideTypingIndicator = () => {};
+  browserSandbox.saveAgentTurn = async () => {};
+  browserSandbox.startAgentWorkPanel = () => {};
+  browserSandbox.upsertAgentMemory = async (_threadId, state) => {
+    capturedInitialState = state;
+  };
+  browserSandbox.runAgentLoop = async (_threadId, state) => {
+    capturedInitialState = state;
+  };
+
+  await browserSandbox.sendAgentMessage('ขอแค่ 40 content พอ');
+
+  assert(capturedInitialState && capturedInitialState.phase === 'bootstrap', 'sendAgentMessage should still start the bootstrap state');
+  assert(!Object.prototype.hasOwnProperty.call(capturedInitialState, 'requestedRowLimit'), 'client bootstrap should not depend on requestedRowLimit parsing');
+}
+
 const cases = [
   ['responses body uses text.format', testResponsesBodyUsesTextFormat],
   ['chat body keeps response_format', testChatBodyKeepsResponseFormat],
@@ -1126,7 +1166,8 @@ const cases = [
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
   ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread],
   ['agent work items map statuses', testAgentWorkItemsMapStatuses],
-  ['agent stop cancels before next loop', testAgentStopCancelsBeforeNextLoop]
+  ['agent stop cancels before next loop', testAgentStopCancelsBeforeNextLoop],
+  ['agent send message does not depend on server-only helpers', testAgentSendMessageDoesNotDependOnServerOnlyHelpers]
 ];
 
 try {
