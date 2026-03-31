@@ -937,9 +937,9 @@ function extractColumnMentions(userPrompt) {
   const text = String(userPrompt || '');
   const matches = [];
   const patterns = [
-    /\bcolumn\s+([A-Z]{1,3})\b/gi,
-    /\bcol(?:umn)?\s+([A-Z]{1,3})\b/gi,
-    /คอลั(?:มน์|่ม)\s*([A-Z]{1,3})/gi
+    /\bcolumn\s+([A-Z]{1,3})(?![A-Z])/gi,
+    /\bcol(?:umn)?\s+([A-Z]{1,3})(?![A-Z])/gi,
+    /คอลั(?:มน์|่ม)\s*([A-Z]{1,3})(?![A-Z])/gi
   ];
 
   patterns.forEach(pattern => {
@@ -962,6 +962,45 @@ function findContextColumnByPrompt(userPrompt, context, excludedLetters) {
     if (!header || excluded.has(String(column.letter || '').toUpperCase())) return false;
     return normalizedPrompt.includes(header);
   }) || null;
+}
+
+function findAdjacentContextColumn(userPrompt, context, excludedLetters) {
+  const normalizedPrompt = cleanCellData(userPrompt || '').toLowerCase();
+  const excluded = new Set((excludedLetters || []).map(letter => String(letter || '').toUpperCase()));
+  if (!normalizedPrompt || !context || !Array.isArray(context.columns)) return null;
+
+  let bestMatch = null;
+
+  AGENT_ADJACENT_COLUMN_KEYWORDS.forEach(keyword => {
+    const normalizedKeyword = cleanCellData(keyword || '').toLowerCase();
+    if (!normalizedKeyword) return;
+
+    let keywordIndex = normalizedPrompt.indexOf(normalizedKeyword);
+    while (keywordIndex !== -1) {
+      const promptTail = normalizedPrompt.slice(keywordIndex + normalizedKeyword.length);
+
+      context.columns.forEach(column => {
+        const letter = String(column.letter || '').toUpperCase();
+        if (excluded.has(letter)) return;
+
+        const header = cleanCellData(column.header || '').toLowerCase();
+        const label = cleanCellData(column.label || '').toLowerCase();
+        const candidates = [header, label].filter(Boolean);
+
+        candidates.forEach(candidate => {
+          const offset = promptTail.indexOf(candidate);
+          if (offset === -1) return;
+          if (!bestMatch || offset < bestMatch.offset) {
+            bestMatch = { column, offset };
+          }
+        });
+      });
+
+      keywordIndex = normalizedPrompt.indexOf(normalizedKeyword, keywordIndex + normalizedKeyword.length);
+    }
+  });
+
+  return bestMatch ? bestMatch.column : null;
 }
 
 function findContextColumnByPrefix(input, context, excludedLetters) {
@@ -991,6 +1030,28 @@ function resolveAgentColumnToken(input, context, excludedLetters) {
 
   const resolvedPrefix = findContextColumnByPrefix(normalizedInput, context, excludedLetters);
   if (resolvedPrefix) return resolvedPrefix;
+
+  return null;
+}
+
+function resolveAgentColumnReferenceOrNull(input, context, excludedLetters) {
+  const normalizedInput = cleanCellData(input || '');
+  if (!normalizedInput) return null;
+
+  const hasContextColumns = Boolean(context && Array.isArray(context.columns) && context.columns.length);
+  const resolvedToken = resolveAgentColumnToken(normalizedInput, context, excludedLetters || []);
+  if (resolvedToken) return resolvedToken;
+
+  try {
+    const resolvedExisting = hasContextColumns
+      ? resolveExistingColumnReference(normalizedInput, context)
+      : resolveColumnReference(normalizedInput);
+    if (resolvedExisting && !(excludedLetters || []).includes(String(resolvedExisting.letter || '').toUpperCase())) {
+      return resolvedExisting;
+    }
+  } catch (error) {
+    return null;
+  }
 
   return null;
 }
@@ -1079,8 +1140,9 @@ function extractAgentRequestedRowLimit(userPrompt) {
 }
 
 function inferAgentInsertPosition(userPrompt, context, currentPosition, fallbackTargetColumn) {
-  const adjacentBaseColumn = promptIncludesAnyKeyword(userPrompt, AGENT_ADJACENT_COLUMN_KEYWORDS)
-    ? findContextColumnByPrompt(userPrompt, context, [])
+  const hasAdjacentKeyword = promptIncludesAnyKeyword(userPrompt, AGENT_ADJACENT_COLUMN_KEYWORDS);
+  const adjacentBaseColumn = hasAdjacentKeyword
+    ? (findAdjacentContextColumn(userPrompt, context, []) || fallbackTargetColumn || findContextColumnByPrompt(userPrompt, context, []))
     : null;
   if (adjacentBaseColumn) {
     return getColumnLetter(Math.min((adjacentBaseColumn.index || 0) + 1, (context && context.lastColumn ? context.lastColumn : adjacentBaseColumn.index) + 1));
@@ -1093,11 +1155,19 @@ function inferAgentInsertPosition(userPrompt, context, currentPosition, fallback
 }
 
 function normalizeAgentPlanActions(userPrompt, agentState, actions) {
-  const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
+  const context = agentState && agentState.context
+    ? agentState.context
+    : (() => {
+        try {
+          return getActiveSheetContext();
+        } catch (error) {
+          return { columns: [], lastColumn: 0 };
+        }
+      })();
   const safeActions = Array.isArray(actions) ? actions : [];
   const inferredTargetColumn = inferAgentTargetColumn(userPrompt, context);
-
-  return safeActions.map(action => {
+  const explicitColumnMentions = extractColumnMentions(userPrompt);
+  const normalizedActions = safeActions.map(action => {
     const normalized = {
       type: cleanCellData(action && action.type || ''),
       position: cleanCellData(action && action.position || ''),
@@ -1137,6 +1207,126 @@ function normalizeAgentPlanActions(userPrompt, agentState, actions) {
 
     return normalized;
   });
+
+  const insertAction = normalizedActions.find(action => action && action.type === 'insert_column' && cleanCellData(action.position || ''));
+
+  normalizedActions.forEach((action, index) => {
+    if (action.type !== 'analyze_fill') return;
+    const rawAction = safeActions[index] || {};
+    const rawTargetToken = cleanCellData(rawAction.targetColumn || '');
+
+    const resolvedSourceColumn = resolveAgentColumnReferenceOrNull(action.sourceColumn, context, [
+      action.targetColumn ? String(action.targetColumn).toUpperCase() : ''
+    ]);
+    const resolvedTargetColumn = resolveAgentColumnReferenceOrNull(action.targetColumn, context, []);
+    const rawResolvedTargetColumn = resolveAgentColumnReferenceOrNull(rawTargetToken, context, []);
+    const shouldPreferInsertedTarget = Boolean(
+      insertAction &&
+      insertAction.position &&
+      promptIncludesAnyKeyword(userPrompt, AGENT_CREATE_COLUMN_KEYWORDS) &&
+      explicitColumnMentions.length === 0 &&
+      (
+        !rawTargetToken ||
+        !resolvedTargetColumn ||
+        (resolvedSourceColumn && rawResolvedTargetColumn && rawResolvedTargetColumn.letter === resolvedSourceColumn.letter) ||
+        (inferredTargetColumn && rawResolvedTargetColumn && rawResolvedTargetColumn.letter === inferredTargetColumn.letter)
+      )
+    );
+
+    if (resolvedSourceColumn) {
+      action.sourceColumn = resolvedSourceColumn.letter;
+    }
+
+    if (shouldPreferInsertedTarget) {
+      action.targetColumn = insertAction.position;
+      return;
+    }
+
+    if (resolvedTargetColumn) {
+      action.targetColumn = resolvedTargetColumn.letter;
+      return;
+    }
+
+    if (insertAction && insertAction.position) {
+      action.targetColumn = insertAction.position;
+    }
+  });
+
+  return normalizedActions;
+}
+
+function validateExecutableAgentAction(action, state, fullPlan) {
+  const context = state && state.context
+    ? state.context
+    : (() => {
+        try {
+          return getActiveSheetContext();
+        } catch (error) {
+          return { columns: [], lastColumn: 0 };
+        }
+      })();
+  const safeAction = action || {};
+
+  if (safeAction.type === 'insert_column') {
+    const position = cleanCellData(safeAction.position || '');
+    const positionIndex = convertToColumnNumber(position);
+    const maxInsertIndex = Math.max(1, Number(context && context.lastColumn || 0) + 1);
+    if (!position || !positionIndex || positionIndex > maxInsertIndex) {
+      return {
+        valid: false,
+        reason: 'Insert position could not be normalized to a real column location'
+      };
+    }
+
+    return {
+      valid: true,
+      normalizedAction: {
+        ...safeAction,
+        position: getColumnLetter(positionIndex)
+      }
+    };
+  }
+
+  if (safeAction.type === 'delete_column') {
+    const resolvedTargetColumn = resolveAgentDeleteTargetColumn(safeAction, state);
+    return {
+      valid: true,
+      normalizedAction: resolvedTargetColumn
+        ? {
+            ...safeAction,
+            targetColumn: resolvedTargetColumn.letter
+          }
+        : safeAction
+    };
+  }
+
+  if (safeAction.type === 'analyze_fill') {
+    const normalizedPlan = normalizeAgentPlanActions(state && state.userPrompt ? state.userPrompt : '', state, fullPlan && Array.isArray(fullPlan.actions) ? fullPlan.actions : [safeAction]);
+    const currentActionIndex = Math.max(0, Number(state && state.currentActionIndex || 0));
+    const normalizedAction = normalizedPlan[currentActionIndex] || normalizedPlan.find(item => item && item.type === 'analyze_fill') || safeAction;
+    const sourceColumn = resolveAgentColumnReferenceOrNull(normalizedAction.sourceColumn, context, [
+      normalizedAction.targetColumn ? String(normalizedAction.targetColumn).toUpperCase() : ''
+    ]);
+    const targetColumn = resolveAgentColumnReferenceOrNull(normalizedAction.targetColumn, context, []);
+
+    if (!sourceColumn || !targetColumn) {
+      return {
+        valid: false,
+        reason: 'Analyze task columns could not be resolved to real sheet columns'
+      };
+    }
+
+    return {
+      valid: true,
+      normalizedAction: {
+        ...normalizedAction,
+        sourceColumn: sourceColumn.letter,
+        targetColumn: targetColumn.letter
+      }
+    };
+  }
+
+  return { valid: true, normalizedAction: safeAction };
 }
 
 function resolveAgentDeleteTargetColumn(action, state) {
@@ -1144,13 +1334,13 @@ function resolveAgentDeleteTargetColumn(action, state) {
   const explicitTarget = cleanCellData(action && action.targetColumn || '');
 
   if (explicitTarget) {
-    const resolvedExplicit = resolveExistingColumnReference(explicitTarget, context);
+    const resolvedExplicit = resolveAgentColumnReferenceOrNull(explicitTarget, context, []);
     if (resolvedExplicit) return resolvedExplicit;
   }
 
   const inferredTarget = inferAgentTargetColumn(state && state.userPrompt ? state.userPrompt : '', context);
   if (inferredTarget && inferredTarget.letter) {
-    const resolvedInferred = resolveExistingColumnReference(inferredTarget.letter, context);
+    const resolvedInferred = resolveAgentColumnReferenceOrNull(inferredTarget.letter, context, []);
     if (resolvedInferred) return resolvedInferred;
   }
 
@@ -1496,7 +1686,11 @@ function processRealUniverseAgentStep(agentState) {
   }
 
   if (phase === 'execute') {
-    const plan = state.plan || { actions: [] };
+    const normalizedPlan = {
+      ...(state.plan || { actions: [] }),
+      actions: normalizeAgentPlanActions(state.userPrompt || '', state, state.plan && Array.isArray(state.plan.actions) ? state.plan.actions : [])
+    };
+    const plan = normalizedPlan;
     const action = plan.actions[state.currentActionIndex];
 
     if (!action) {
@@ -1514,8 +1708,24 @@ function processRealUniverseAgentStep(agentState) {
       return response;
     }
 
-    if (action.type === 'insert_column') {
-      const result = insertColumnAt(action.position, action.headerName);
+    const actionValidation = validateExecutableAgentAction(action, state, plan);
+    if (!actionValidation.valid) {
+      return {
+        done: true,
+        events: [createAgentTraceEvent(state, 'error', 'Could not normalize executable steps', {
+          intentType: state.intentType || '',
+          actions: plan.actions,
+          error: actionValidation.reason || 'Executable action validation failed'
+        })],
+        finalMessage: 'ผมเข้าใจงานแล้ว แต่ยังแปลงคอลัมน์หรือปลายทางให้เป็นคำสั่งที่รันได้จริงไม่สำเร็จ กรุณาระบุชื่อคอลัมน์หรือคอลัมน์ปลายทางให้ชัดขึ้นอีกครั้งครับ',
+        nextState: null
+      };
+    }
+
+    const executableAction = actionValidation.normalizedAction || action;
+
+    if (executableAction.type === 'insert_column') {
+      const result = insertColumnAt(executableAction.position, executableAction.headerName);
       const updatedContext = getActiveSheetContext();
       const executionLog = (state.executionLog || []).concat(
         'Inserted column ' + result.columnLetter + ' with header "' + (result.headerName || result.columnLetter) + '".'
@@ -1534,8 +1744,8 @@ function processRealUniverseAgentStep(agentState) {
           createAgentTraceEvent(state, 'tool_call', 'Inserting column ' + result.columnLetter, {
             toolName: 'insertColumnAt',
             toolInput: {
-              position: action.position,
-              headerName: action.headerName
+              position: executableAction.position,
+              headerName: executableAction.headerName
             }
           }),
           createAgentTraceEvent(state, 'tool_result', 'Created header "' + (result.headerName || result.columnLetter) + '"', {
@@ -1548,8 +1758,8 @@ function processRealUniverseAgentStep(agentState) {
       return response;
     }
 
-    if (action.type === 'delete_column') {
-      const resolvedTargetColumn = resolveAgentDeleteTargetColumn(action, state);
+    if (executableAction.type === 'delete_column') {
+      const resolvedTargetColumn = resolveAgentDeleteTargetColumn(executableAction, state);
       if (!resolvedTargetColumn) {
         return {
           done: true,
@@ -1557,7 +1767,7 @@ function processRealUniverseAgentStep(agentState) {
             intentType: state.intentType || '',
             toolName: 'deleteColumnAt',
             toolInput: {
-              targetColumn: cleanCellData(action.targetColumn || '')
+              targetColumn: cleanCellData(executableAction.targetColumn || '')
             },
             error: 'Delete column target could not be resolved'
           })],
@@ -1598,11 +1808,11 @@ function processRealUniverseAgentStep(agentState) {
       return response;
     }
 
-    if (action.type === 'analyze_fill') {
+    if (executableAction.type === 'analyze_fill') {
       let runtime = state.actionRuntime;
       if (!runtime) {
-        const sourceColumn = resolveColumnReference(action.sourceColumn);
-        const targetColumn = resolveColumnReference(action.targetColumn);
+        const sourceColumn = resolveColumnReference(executableAction.sourceColumn);
+        const targetColumn = resolveColumnReference(executableAction.targetColumn);
         const lastRow = SpreadsheetApp.getActiveSheet().getLastRow();
         const availableRows = Math.max(lastRow - 1, 0);
         const requestedRowLimit = Number(state.requestedRowLimit || 0);
@@ -1630,8 +1840,8 @@ function processRealUniverseAgentStep(agentState) {
           events: [createAgentTraceEvent(state, 'status', 'No data rows found in the active sheet', {
             toolName: 'analyze_fill',
             toolInput: {
-              sourceColumn: action.sourceColumn,
-              targetColumn: action.targetColumn
+              sourceColumn: executableAction.sourceColumn,
+              targetColumn: executableAction.targetColumn
             }
           })],
           nextState: nextState
@@ -1653,7 +1863,7 @@ function processRealUniverseAgentStep(agentState) {
         }));
 
       const analyzedValues = analyzeAgentBatchValues({
-        ...action,
+        ...executableAction,
         selectedModel: agentConfig.model,
         reasoningEffort: agentConfig.reasoning
       }, batchValues);
