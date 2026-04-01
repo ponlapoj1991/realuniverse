@@ -50,6 +50,7 @@ const AGENT_OPERATIONAL_KEYWORDS = [
 const AGENT_CREATE_COLUMN_KEYWORDS = ['create', 'add', 'insert', 'new column', 'สร้าง', 'เพิ่ม', 'แทรก', 'สร้างใหม่'];
 const AGENT_DELETE_COLUMN_KEYWORDS = ['delete', 'remove', 'drop', 'ลบ', 'ลบออก'];
 const AGENT_ADJACENT_COLUMN_KEYWORDS = ['next to', 'beside', 'after', 'adjacent', 'ข้าง', 'ข้างๆ', 'ข้าง ๆ', 'ถัดจาก'];
+const AGENT_FOLLOW_UP_KEYWORDS = ['again', 'redo', 'rewrite', 'rework', 'improve', 'better', 'update', 'ใหม่', 'อีกครั้ง', 'ปรับ', 'แก้ใหม่', 'สรุปใหม่', 'วิเคราะห์ใหม่', 'ไม่ดี', 'ไม่มีประโยชน์'];
 
 const MODEL_REGISTRY = {
   'gpt-4.1': {
@@ -901,6 +902,7 @@ function getRealUniverseAgentStatusInfo() {
 function buildAgentPlanningPrompt(userPrompt, agentState) {
   const context = agentState.context || getActiveSheetContext();
   const summary = agentState.memorySummary || '';
+  const followUpContext = agentState.followUpContext || null;
 
   return JSON.stringify({
     userPrompt: userPrompt,
@@ -916,7 +918,15 @@ function buildAgentPlanningPrompt(userPrompt, agentState) {
       })),
       sampleRows: context.sampleRows
     },
-    memorySummary: summary
+    memorySummary: summary,
+    followUpContext: followUpContext ? {
+      lastActionType: followUpContext.lastActionType || '',
+      sourceColumn: followUpContext.sourceColumn || '',
+      targetColumn: followUpContext.targetColumn || '',
+      targetHeaderName: followUpContext.targetHeaderName || '',
+      requestedRowLimit: Number(followUpContext.requestedRowLimit || 0) || null,
+      instruction: followUpContext.instruction || ''
+    } : null
   }, null, 2);
 }
 
@@ -931,6 +941,10 @@ function promptIncludesAnyKeyword(prompt, keywords) {
   const normalizedPrompt = cleanCellData(prompt || '').toLowerCase();
   if (!normalizedPrompt) return false;
   return (keywords || []).some(keyword => normalizedPrompt.includes(keyword));
+}
+
+function isAgentFollowUpTask(userPrompt) {
+  return promptIncludesAnyKeyword(userPrompt, AGENT_FOLLOW_UP_KEYWORDS);
 }
 
 function extractColumnMentions(userPrompt) {
@@ -1445,12 +1459,54 @@ function buildAgentNaturalFinalMessage(state, plan, executionLog) {
   return 'ผมดำเนินการเสร็จแล้วครับ';
 }
 
+function buildAgentFollowUpAnalyzePlan(userPrompt, agentState, existingPlan) {
+  const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
+  const followUpContext = agentState && agentState.followUpContext ? agentState.followUpContext : null;
+  if (!followUpContext || followUpContext.lastActionType !== 'analyze_fill') {
+    return null;
+  }
+
+  const sourceColumn = resolveAgentColumnReferenceOrNull(followUpContext.sourceColumn || '', context, []);
+  const targetColumn = resolveAgentColumnReferenceOrNull(followUpContext.targetColumn || '', context, []);
+  if (!sourceColumn || !targetColumn) {
+    return null;
+  }
+
+  const safeInstruction = cleanCellData(userPrompt || followUpContext.instruction || '');
+  if (!safeInstruction) {
+    return null;
+  }
+
+  const targetLabel = cleanCellData(followUpContext.targetHeaderName || targetColumn.header || targetColumn.label || targetColumn.letter);
+  return {
+    summary: existingPlan.summary || ('Update ' + targetLabel + ' in column ' + targetColumn.letter + ' using column ' + sourceColumn.letter),
+    finalResponse: existingPlan.finalResponse || ('I will update ' + targetLabel + ' in column ' + targetColumn.letter + ' using column ' + sourceColumn.letter + '.'),
+    actions: [
+      {
+        type: 'analyze_fill',
+        position: '',
+        headerName: '',
+        sourceColumn: sourceColumn.letter,
+        targetColumn: targetColumn.letter,
+        instruction: safeInstruction
+      }
+    ]
+  };
+}
+
 function repairOperationalAgentPlan(userPrompt, agentState, plan) {
   const context = agentState && agentState.context ? agentState.context : getActiveSheetContext();
   const existingPlan = plan || { actions: [] };
 
   if (Array.isArray(existingPlan.actions) && existingPlan.actions.length > 0) {
     return existingPlan;
+  }
+
+  if (isAgentFollowUpTask(userPrompt)) {
+    const followUpPlan = buildAgentFollowUpAnalyzePlan(userPrompt, agentState, existingPlan);
+    if (followUpPlan && Array.isArray(followUpPlan.actions) && followUpPlan.actions.length) {
+      return followUpPlan;
+    }
   }
 
   if (promptIncludesAnyKeyword(userPrompt, AGENT_DELETE_COLUMN_KEYWORDS)) {
@@ -1601,15 +1657,19 @@ function processRealUniverseAgentStep(agentState) {
   if (phase === 'bootstrap') {
     const context = getActiveSheetContext();
     const intentType = isAgentOperationalTask(state.userPrompt || '') ? 'operational' : 'ask';
+    const promptRowLimit = extractAgentRequestedRowLimit(state.userPrompt || '');
+    const followUpRowLimit = Number(state.followUpContext && state.followUpContext.requestedRowLimit || 0);
+    const shouldReuseFollowUpLimit = !promptRowLimit && isAgentFollowUpTask(state.userPrompt || '');
     const nextState = {
       threadId: state.threadId || '',
       phase: 'plan',
       userPrompt: state.userPrompt || '',
       memorySummary: state.memorySummary || '',
+      followUpContext: state.followUpContext || null,
       selectedModel: agentConfig.model,
       reasoningEffort: agentConfig.reasoning,
       planRetryCount: 0,
-      requestedRowLimit: extractAgentRequestedRowLimit(state.userPrompt || ''),
+      requestedRowLimit: promptRowLimit || (shouldReuseFollowUpLimit && followUpRowLimit > 0 ? followUpRowLimit : null),
       context: context,
       intentType: intentType,
       executionLog: []
@@ -4692,6 +4752,64 @@ async function getAgentPlanningMemory(threadId) {
    return [rollingSummary, recentTurnSummary].filter(Boolean).join('\\n').trim();
 }
 
+function buildAgentFollowUpContextFromHistory(turns, events) {
+   const cleanText = value => String(value == null ? '' : value).trim();
+   const safeTurns = (Array.isArray(turns) ? turns : []).slice().sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+   const safeEvents = (Array.isArray(events) ? events : []).slice().sort((left, right) => (left.createdAt || 0) - (right.createdAt || 0));
+   const latestWriteIndex = safeEvents.reduce((foundIndex, event, index) => {
+       const trace = event && event.trace ? event.trace : {};
+       const toolResult = trace.toolResult || {};
+       if (trace.toolName === 'writeColumnValues' && Number(toolResult.rowsWritten || 0) > 0) {
+           return index;
+       }
+       return foundIndex;
+   }, -1);
+
+   if (latestWriteIndex === -1) return null;
+
+   const writeEvent = safeEvents[latestWriteIndex];
+   const relevantEvents = safeEvents.slice(0, latestWriteIndex + 1);
+   const analyzeEvent = relevantEvents.slice().reverse().find(event => {
+       const trace = event && event.trace ? event.trace : {};
+       return trace.toolName === 'analyze_fill' && event.type === 'tool_call';
+   });
+   if (!analyzeEvent) return null;
+
+   const insertEvent = relevantEvents.slice().reverse().find(event => {
+       const trace = event && event.trace ? event.trace : {};
+       return trace.toolName === 'insertColumnAt' && event.type === 'tool_result';
+   });
+
+   const analyzeTrace = analyzeEvent.trace || {};
+   const writeTrace = writeEvent.trace || {};
+   const analyzeInput = analyzeTrace.toolInput || {};
+   const writeResult = writeTrace.toolResult || {};
+   const sourceColumn = cleanText(analyzeInput.sourceColumn || '');
+   const targetColumn = cleanText(analyzeInput.targetColumn || writeResult.columnLetter || '');
+   if (!sourceColumn || !targetColumn) return null;
+
+   const promptTurn = safeTurns.slice().reverse().find(turn => {
+       return turn && turn.role === 'user' && turn.phase === 'prompt' && Number(turn.createdAt || 0) <= Number(analyzeEvent.createdAt || 0);
+   });
+   const insertTrace = insertEvent && insertEvent.trace ? insertEvent.trace : {};
+   const insertResult = insertTrace.toolResult || {};
+
+   return {
+       lastActionType: 'analyze_fill',
+       sourceColumn: sourceColumn,
+       targetColumn: targetColumn,
+       targetHeaderName: cleanText(insertResult.headerName || ''),
+       requestedRowLimit: Number(writeResult.rowsWritten || 0) || 0,
+       instruction: promptTurn && promptTurn.content ? String(promptTurn.content) : ''
+   };
+}
+
+async function getAgentFollowUpContext(threadId) {
+   const turns = await getAgentTurns(threadId);
+   const events = await getAgentEvents(threadId);
+   return buildAgentFollowUpContextFromHistory(turns, events);
+}
+
 function getIconMarkup(name) {
    return '<i data-lucide="' + name + '"></i>';
 }
@@ -5266,6 +5384,7 @@ async function sendAgentMessage(question) {
    const context = await callServer('getActiveSheetContext');
    const thread = await ensureAgentThread(context);
    const memorySummary = await getAgentPlanningMemory(thread.id);
+   const followUpContext = await getAgentFollowUpContext(thread.id);
    const selectedModel = getSelectedModelForMode('agent');
    const selectedReasoning = getReasoningEffortForMode('agent');
 
@@ -5280,6 +5399,7 @@ async function sendAgentMessage(question) {
        phase: 'bootstrap',
        userPrompt: question,
        memorySummary: memorySummary,
+       followUpContext: followUpContext,
        selectedModel: selectedModel,
        reasoningEffort: selectedReasoning
    };
