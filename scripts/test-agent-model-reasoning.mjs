@@ -652,6 +652,155 @@ function testAgentSourceInferenceDoesNotFallbackToFirstColumn(server) {
   assert(sourceColumn === null, 'source inference should stop instead of silently falling back to the first column');
 }
 
+function testAgentFollowUpRepairReusesPreviousAnalyzeContext(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'User wants a better summary',
+    finalResponse: 'I will improve the summary.',
+    actions: []
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'ทำไมสรุปมา ไม่มีประโยชน์อะไรเลย ครับ คุณควรสรุปใหม่อีกครั้ง โดยวิเคราะห์ว่า content นั้น ใจความคืออะไร',
+    executionLog: [],
+    planRetryCount: 0,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    followUpContext: {
+      lastActionType: 'analyze_fill',
+      sourceColumn: 'C',
+      targetColumn: 'F',
+      targetHeaderName: 'summary',
+      requestedRowLimit: 20,
+      instruction: 'วิเคราะห์ content แล้ว ช่วยสร้างคอลั่มข้างๆ คอลั่ม channel ชื่อ summary แล้วสรุปสั้นๆ จำนวน 20 แถวแรกให้หน่อยครับ'
+    },
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 100,
+      columnCount: 6,
+      lastColumn: 6,
+      columns: [
+        { index: 1, letter: 'A', header: 'Date', label: 'Date' },
+        { index: 2, letter: 'B', header: 'url', label: 'url' },
+        { index: 3, letter: 'C', header: 'Content', label: 'Content' },
+        { index: 4, letter: 'D', header: 'Channel', label: 'Channel' },
+        { index: 5, letter: 'E', header: 'Brand', label: 'Brand' },
+        { index: 6, letter: 'F', header: 'summary', label: 'summary' }
+      ]
+    }
+  });
+
+  assert(result.done === false, 'follow-up repair should continue to execute');
+  assert(result.nextState && result.nextState.phase === 'execute', 'follow-up repair should advance to execute');
+  assert(result.nextState.plan.actions[0].type === 'analyze_fill', 'follow-up repair should create analyze action');
+  assert(result.nextState.plan.actions[0].sourceColumn === 'C', 'follow-up repair should reuse the previous source column');
+  assert(result.nextState.plan.actions[0].targetColumn === 'F', 'follow-up repair should reuse the previous target column');
+  assert(String(result.nextState.plan.actions[0].instruction || '').includes('สรุปใหม่อีกครั้ง'), 'follow-up repair should use the new user instruction');
+}
+
+function testAgentBootstrapUsesFollowUpRowLimitWhenPromptOmitsOne(server) {
+  server.SpreadsheetApp = {
+    getActiveSheet() {
+      return {
+        getSheetId() {
+          return 1;
+        },
+        getName() {
+          return 'Sheet1';
+        },
+        getLastColumn() {
+          return 6;
+        },
+        getLastRow() {
+          return 21;
+        },
+        getMaxColumns() {
+          return 26;
+        },
+        getRange(row, column, numRows, numColumns) {
+          if (row === 1 && column === 1 && numRows === 1 && numColumns === 6) {
+            return {
+              getDisplayValues() {
+                return [['Date', 'url', 'Content', 'Channel', 'Brand', 'summary']];
+              }
+            };
+          }
+          return {
+            getDisplayValues() {
+              return Array.from({ length: numRows }, () => Array.from({ length: numColumns }, () => 'sample'));
+            }
+          };
+        }
+      };
+    },
+    getActiveSpreadsheet() {
+      return {
+        getId() {
+          return 'spreadsheet-id';
+        },
+        getName() {
+          return 'Spreadsheet';
+        }
+      };
+    },
+    flush() {}
+  };
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'bootstrap',
+    threadId: 'thread-1',
+    userPrompt: 'สรุปใหม่อีกครั้ง โดยวิเคราะห์ว่า content นั้น ใจความคืออะไร',
+    followUpContext: {
+      lastActionType: 'analyze_fill',
+      sourceColumn: 'C',
+      targetColumn: 'F',
+      targetHeaderName: 'summary',
+      requestedRowLimit: 20,
+      instruction: 'old instruction'
+    },
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high'
+  });
+
+  assert(result.done === false, 'bootstrap should continue for follow-up prompts');
+  assert(result.nextState && result.nextState.requestedRowLimit === 20, 'bootstrap should inherit the previous run row limit when the prompt omits one');
+  assert(result.nextState && result.nextState.followUpContext && result.nextState.followUpContext.targetColumn === 'F', 'bootstrap should preserve follow-up context');
+}
+
+function testAgentFollowUpWithoutPreviousContextFailsClearly(server) {
+  server.buildAgentPlan = () => ({
+    summary: 'User wants to improve the summary',
+    finalResponse: 'I will improve the summary.',
+    actions: []
+  });
+
+  const result = server.processRealUniverseAgentStep({
+    phase: 'plan',
+    userPrompt: 'สรุปใหม่อีกครั้ง โดยวิเคราะห์ว่า content นั้น ใจความคืออะไร',
+    executionLog: [],
+    planRetryCount: 1,
+    selectedModel: 'gpt-5.4',
+    reasoningEffort: 'high',
+    context: {
+      sheetName: 'Sheet1',
+      rowCount: 100,
+      columnCount: 6,
+      lastColumn: 6,
+      columns: [
+        { index: 1, letter: 'A', header: 'Date', label: 'Date' },
+        { index: 2, letter: 'B', header: 'url', label: 'url' },
+        { index: 3, letter: 'C', header: 'Content', label: 'Content' },
+        { index: 4, letter: 'D', header: 'Channel', label: 'Channel' },
+        { index: 5, letter: 'E', header: 'Brand', label: 'Brand' },
+        { index: 6, letter: 'F', header: 'summary', label: 'summary' }
+      ]
+    }
+  });
+
+  assert(result.done === true, 'follow-up with no previous context should fail clearly');
+  assert(String(result.finalMessage || '').includes('ยังสร้างขั้นตอนที่รันได้ไม่สำเร็จ'), 'follow-up failure should stay explicit instead of guessing');
+}
+
 function testAgentExecuteFailsClearlyForUnresolvedActions(server) {
   const result = server.processRealUniverseAgentStep({
     phase: 'execute',
@@ -1204,6 +1353,7 @@ async function testAgentSendMessageDoesNotDependOnServerOnlyHelpers(server) {
     title: 'Agent · Sheet1'
   });
   browserSandbox.getAgentPlanningMemory = async () => 'recent context';
+  browserSandbox.getAgentFollowUpContext = async () => null;
   browserSandbox.getSelectedModelForMode = () => 'gpt-5.4';
   browserSandbox.getReasoningEffortForMode = () => 'medium';
   browserSandbox.hideTypingIndicator = () => {};
@@ -1220,6 +1370,115 @@ async function testAgentSendMessageDoesNotDependOnServerOnlyHelpers(server) {
 
   assert(capturedInitialState && capturedInitialState.phase === 'bootstrap', 'sendAgentMessage should still start the bootstrap state');
   assert(!Object.prototype.hasOwnProperty.call(capturedInitialState, 'requestedRowLimit'), 'client bootstrap should not depend on requestedRowLimit parsing');
+}
+
+async function testAgentSendMessageIncludesFollowUpContext(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
+
+  let capturedInitialState = null;
+  browserSandbox.callServer = async functionName => {
+    assert(functionName === 'getActiveSheetContext', 'sendAgentMessage should request active sheet context first');
+    return {
+      spreadsheetId: 'spreadsheet-id',
+      spreadsheetName: 'Spreadsheet',
+      sheetId: 1,
+      sheetName: 'Sheet1'
+    };
+  };
+  browserSandbox.ensureAgentThread = async context => ({
+    id: `${context.spreadsheetId}:${context.sheetId}`,
+    title: 'Agent · Sheet1'
+  });
+  browserSandbox.getAgentPlanningMemory = async () => 'recent context';
+  browserSandbox.getAgentFollowUpContext = async () => ({
+    lastActionType: 'analyze_fill',
+    sourceColumn: 'C',
+    targetColumn: 'F',
+    targetHeaderName: 'summary',
+    requestedRowLimit: 20,
+    instruction: 'old instruction'
+  });
+  browserSandbox.getSelectedModelForMode = () => 'gpt-5.4';
+  browserSandbox.getReasoningEffortForMode = () => 'medium';
+  browserSandbox.hideTypingIndicator = () => {};
+  browserSandbox.saveAgentTurn = async () => {};
+  browserSandbox.startAgentWorkPanel = () => {};
+  browserSandbox.upsertAgentMemory = async (_threadId, state) => {
+    capturedInitialState = state;
+  };
+  browserSandbox.runAgentLoop = async (_threadId, state) => {
+    capturedInitialState = state;
+  };
+
+  await browserSandbox.sendAgentMessage('สรุปใหม่อีกครั้ง โดยวิเคราะห์ว่า content นั้น ใจความคืออะไร');
+
+  assert(capturedInitialState && capturedInitialState.followUpContext && capturedInitialState.followUpContext.targetColumn === 'F', 'sendAgentMessage should pass structured follow-up context into the bootstrap state');
+  assert(capturedInitialState.followUpContext.requestedRowLimit === 20, 'follow-up context should include the previous row limit');
+}
+
+async function testAgentBuildsFollowUpContextFromHistory(server) {
+  const renderedHtml = server.getRealUniverseHtmlContent();
+  const clientScript = extractRenderedClientScript(renderedHtml);
+  const browserSandbox = createBrowserSandbox();
+  vm.createContext(browserSandbox);
+  vm.runInContext(clientScript, browserSandbox, { filename: 'rendered-client.js', timeout: 3000 });
+
+  const turns = [
+    {
+      role: 'user',
+      phase: 'prompt',
+      content: 'วิเคราะห์ content แล้ว ช่วยสร้างคอลั่มข้างๆ คอลั่ม channel ชื่อ summary แล้วสรุปสั้นๆ จำนวน 20 แถวแรกให้หน่อยครับ',
+      createdAt: 100
+    }
+  ];
+  const events = [
+    {
+      type: 'tool_result',
+      createdAt: 150,
+      trace: {
+        toolName: 'insertColumnAt',
+        toolResult: {
+          headerName: 'summary',
+          columnLetter: 'F'
+        }
+      }
+    },
+    {
+      type: 'tool_call',
+      createdAt: 160,
+      trace: {
+        toolName: 'analyze_fill',
+        toolInput: {
+          sourceColumn: 'C',
+          targetColumn: 'F',
+          startRow: 2,
+          batchRowCount: 20
+        }
+      }
+    },
+    {
+      type: 'tool_result',
+      createdAt: 170,
+      trace: {
+        toolName: 'writeColumnValues',
+        toolResult: {
+          columnLetter: 'F',
+          rowsWritten: 20
+        }
+      }
+    }
+  ];
+
+  const followUpContext = browserSandbox.buildAgentFollowUpContextFromHistory(turns, events);
+  assert(followUpContext && followUpContext.lastActionType === 'analyze_fill', 'history extraction should identify the last successful analyze action');
+  assert(followUpContext.sourceColumn === 'C', 'history extraction should preserve the source column');
+  assert(followUpContext.targetColumn === 'F', 'history extraction should preserve the target column');
+  assert(followUpContext.targetHeaderName === 'summary', 'history extraction should keep the inserted header name');
+  assert(followUpContext.requestedRowLimit === 20, 'history extraction should infer the row limit from the successful write');
 }
 
 const cases = [
@@ -1241,13 +1500,18 @@ const cases = [
   ['agent normalizes adjacent insert and explicit columns', testAgentNormalizesAdjacentInsertAndExplicitColumns],
   ['agent prefers header mentioned source over unsafe fallback', testAgentPrefersHeaderMentionedSourceOverUnsafeFallback],
   ['agent source inference does not fallback to first column', testAgentSourceInferenceDoesNotFallbackToFirstColumn],
+  ['agent follow-up repair reuses previous analyze context', testAgentFollowUpRepairReusesPreviousAnalyzeContext],
+  ['agent bootstrap uses follow-up row limit', testAgentBootstrapUsesFollowUpRowLimitWhenPromptOmitsOne],
+  ['agent follow-up without context fails clearly', testAgentFollowUpWithoutPreviousContextFailsClearly],
   ['agent execute fails clearly for unresolved actions', testAgentExecuteFailsClearlyForUnresolvedActions],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
   ['clear agent thread data deletes only target thread', testClearAgentThreadDataDeletesOnlyTargetThread],
   ['agent work items map statuses', testAgentWorkItemsMapStatuses],
   ['agent stop cancels before next loop', testAgentStopCancelsBeforeNextLoop],
-  ['agent send message does not depend on server-only helpers', testAgentSendMessageDoesNotDependOnServerOnlyHelpers]
+  ['agent send message does not depend on server-only helpers', testAgentSendMessageDoesNotDependOnServerOnlyHelpers],
+  ['agent send message includes follow-up context', testAgentSendMessageIncludesFollowUpContext],
+  ['agent builds follow-up context from history', testAgentBuildsFollowUpContextFromHistory]
 ];
 
 try {
