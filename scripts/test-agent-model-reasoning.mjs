@@ -608,6 +608,50 @@ function testAgentNormalizesAdjacentInsertAndExplicitColumns(server) {
   assert(actions[1].targetColumn === 'D', 'analyze target should normalize to the inserted column');
 }
 
+function testAgentPrefersHeaderMentionedSourceOverUnsafeFallback(server) {
+  const actions = server.normalizeAgentPlanActions(
+    'สร้างคอลัมน์ใหม่ข้าง ๆ คอลัมน์ Username ชื่อ PersonaTag แล้วจัดหมวดจากคอลัมน์ Username ลงคอลัมน์นั้น แค่ 15 แถวแรก',
+    {
+      context: {
+        lastColumn: 7,
+        columns: [
+          { index: 1, letter: 'A', header: 'Date', label: 'Date' },
+          { index: 2, letter: 'B', header: 'url', label: 'url' },
+          { index: 3, letter: 'C', header: 'Content', label: 'Content' },
+          { index: 4, letter: 'D', header: 'Channel', label: 'Channel' },
+          { index: 5, letter: 'E', header: 'Username', label: 'Username' },
+          { index: 6, letter: 'F', header: 'Sentiment', label: 'Sentiment' },
+          { index: 7, letter: 'G', header: 'Brand', label: 'Brand' }
+        ]
+      }
+    },
+    [
+      { type: 'insert_column', position: 'E', headerName: 'PersonaTag', sourceColumn: '', targetColumn: '', instruction: '' },
+      { type: 'analyze_fill', position: '', headerName: '', sourceColumn: 'A', targetColumn: 'E', instruction: 'จัดหมวดจาก Username' }
+    ]
+  );
+
+  assert(actions[0].position === 'F', 'adjacent insert next to Username should normalize to the next column');
+  assert(actions[1].sourceColumn === 'E', 'source should prefer the mentioned Username header over the first column fallback');
+  assert(actions[1].targetColumn === 'F', 'analyze target should point to the inserted PersonaTag column');
+}
+
+function testAgentSourceInferenceDoesNotFallbackToFirstColumn(server) {
+  const sourceColumn = server.inferAgentSourceColumn(
+    'ช่วยจัดหมวดข้อมูลลงคอลัมน์ใหม่ให้หน่อย',
+    {
+      columns: [
+        { index: 1, letter: 'A', header: 'Date', label: 'Date' },
+        { index: 2, letter: 'B', header: 'Username', label: 'Username' },
+        { index: 3, letter: 'C', header: 'Brand', label: 'Brand' }
+      ]
+    },
+    { index: 3, letter: 'C', header: 'Brand', label: 'Brand' }
+  );
+
+  assert(sourceColumn === null, 'source inference should stop instead of silently falling back to the first column');
+}
+
 function testAgentExecuteFailsClearlyForUnresolvedActions(server) {
   const result = server.processRealUniverseAgentStep({
     phase: 'execute',
@@ -1195,6 +1239,8 @@ const cases = [
   ['agent execute emits resolution events', testAgentExecuteEmitsResolutionEvents],
   ['agent execute respects requested row limit', testAgentExecuteRespectsRequestedRowLimit],
   ['agent normalizes adjacent insert and explicit columns', testAgentNormalizesAdjacentInsertAndExplicitColumns],
+  ['agent prefers header mentioned source over unsafe fallback', testAgentPrefersHeaderMentionedSourceOverUnsafeFallback],
+  ['agent source inference does not fallback to first column', testAgentSourceInferenceDoesNotFallbackToFirstColumn],
   ['agent execute fails clearly for unresolved actions', testAgentExecuteFailsClearlyForUnresolvedActions],
   ['agent plan events include structured trace', testAgentPlanEventsIncludeStructuredTrace],
   ['agent log text includes turns and events', testAgentLogTextIncludesTurnsAndEvents],
