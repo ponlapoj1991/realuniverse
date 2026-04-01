@@ -964,6 +964,46 @@ function findContextColumnByPrompt(userPrompt, context, excludedLetters) {
   }) || null;
 }
 
+function findContextColumnsMentionedInPrompt(userPrompt, context, excludedLetters) {
+  const normalizedPrompt = cleanCellData(userPrompt || '').toLowerCase();
+  const excluded = new Set((excludedLetters || []).map(letter => String(letter || '').toUpperCase()));
+  if (!normalizedPrompt || !context || !Array.isArray(context.columns)) return [];
+
+  const matches = [];
+  context.columns.forEach(column => {
+    const letter = String(column.letter || '').toUpperCase();
+    if (!letter || excluded.has(letter)) return;
+
+    const candidates = [cleanCellData(column.header || ''), cleanCellData(column.label || '')]
+      .map(value => value.toLowerCase())
+      .filter(Boolean);
+
+    candidates.forEach(candidate => {
+      let fromIndex = 0;
+      while (fromIndex < normalizedPrompt.length) {
+        const matchIndex = normalizedPrompt.indexOf(candidate, fromIndex);
+        if (matchIndex === -1) break;
+        matches.push({
+          column: column,
+          index: matchIndex,
+          length: candidate.length
+        });
+        fromIndex = matchIndex + candidate.length;
+      }
+    });
+  });
+
+  matches.sort((left, right) => left.index - right.index || right.length - left.length);
+  const seenLetters = new Set();
+  return matches.reduce((result, match) => {
+    const letter = String(match.column && match.column.letter || '').toUpperCase();
+    if (!letter || seenLetters.has(letter)) return result;
+    seenLetters.add(letter);
+    result.push(match.column);
+    return result;
+  }, []);
+}
+
 function findAdjacentContextColumn(userPrompt, context, excludedLetters) {
   const normalizedPrompt = cleanCellData(userPrompt || '').toLowerCase();
   const excluded = new Set((excludedLetters || []).map(letter => String(letter || '').toUpperCase()));
@@ -1077,6 +1117,7 @@ function inferAgentTargetColumn(userPrompt, context) {
 function inferAgentSourceColumn(userPrompt, context, targetColumn) {
   const mentions = extractColumnMentions(userPrompt);
   const targetLetter = targetColumn && targetColumn.letter ? String(targetColumn.letter).toUpperCase() : '';
+  const targetWillBeInserted = shouldAgentInsertTargetColumn(userPrompt, targetColumn, context);
   if (mentions.length === 1 && String(mentions[0] || '').toUpperCase() !== targetLetter) {
     const existingSingleMention = context && Array.isArray(context.columns)
       ? context.columns.find(column => column.letter === String(mentions[0] || '').toUpperCase())
@@ -1094,14 +1135,21 @@ function inferAgentSourceColumn(userPrompt, context, targetColumn) {
     }
   }
 
-  const headerMatch = findContextColumnByPrompt(userPrompt, context, [
+  const referencedColumns = findContextColumnsMentionedInPrompt(
+    userPrompt,
+    context,
+    targetWillBeInserted ? [] : [targetLetter]
+  );
+  if (referencedColumns.length > 0) {
+    const nonTargetReference = referencedColumns.find(column => String(column.letter || '').toUpperCase() !== targetLetter);
+    if (nonTargetReference) return nonTargetReference;
+    if (targetWillBeInserted && referencedColumns[0]) return referencedColumns[0];
+  }
+
+  const headerMatch = findContextColumnByPrompt(userPrompt, context, targetWillBeInserted ? [] : [
     targetColumn && targetColumn.letter ? targetColumn.letter : ''
   ]);
   if (headerMatch) return headerMatch;
-
-  if (context && Array.isArray(context.columns)) {
-    return context.columns.find(column => column.letter !== (targetColumn && targetColumn.letter)) || context.columns[0] || null;
-  }
 
   return null;
 }
@@ -1167,6 +1215,7 @@ function normalizeAgentPlanActions(userPrompt, agentState, actions) {
   const safeActions = Array.isArray(actions) ? actions : [];
   const inferredTargetColumn = inferAgentTargetColumn(userPrompt, context);
   const explicitColumnMentions = extractColumnMentions(userPrompt);
+  const inferredSourceColumn = inferAgentSourceColumn(userPrompt, context, inferredTargetColumn);
   const normalizedActions = safeActions.map(action => {
     const normalized = {
       type: cleanCellData(action && action.type || ''),
@@ -1232,8 +1281,15 @@ function normalizeAgentPlanActions(userPrompt, agentState, actions) {
         (inferredTargetColumn && rawResolvedTargetColumn && rawResolvedTargetColumn.letter === inferredTargetColumn.letter)
       )
     );
+    const shouldPreferInferredSource = Boolean(
+      inferredSourceColumn &&
+      explicitColumnMentions.length === 0 &&
+      (!resolvedSourceColumn || resolvedSourceColumn.letter !== inferredSourceColumn.letter)
+    );
 
-    if (resolvedSourceColumn) {
+    if (shouldPreferInferredSource) {
+      action.sourceColumn = inferredSourceColumn.letter;
+    } else if (resolvedSourceColumn) {
       action.sourceColumn = resolvedSourceColumn.letter;
     }
 
